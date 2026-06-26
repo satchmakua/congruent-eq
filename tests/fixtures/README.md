@@ -15,10 +15,14 @@ A fixture module defines:
 - `NOTE` — one line on what the pair exercises (and, for counterexamples, the
   kind of input that should break it).
 
-Functions stay inside the supported subset (typed params; int/bool; arithmetic,
-comparisons, boolean logic; `if/else`; conditional expressions; `for ... in
-range(...)` loops without `return` inside). Arrays arrive later — see
-`../../ROADMAP.md`.
+Functions stay inside the supported subset (typed params; int/bool/list[int];
+arithmetic, comparisons, boolean logic; `if/else`; conditional expressions;
+`for ... in range(...)` and `for x in xs` loops without `return` inside;
+`len(xs)` and `xs[i]` reads). See `../../ROADMAP.md`.
+
+`list[int]` inputs are bounded to length `--bound`, so an array verdict reads
+"holds for lists up to length N". (Indexing `xs[i]` is exercised by the
+differential stage but not yet by proofs — see the roadmap.)
 
 Every pair must be correct under the tool's semantics: integers are modeled as
 fixed-width two's-complement, and scalar `int` inputs range over the **whole**
@@ -38,6 +42,9 @@ needs an `n >= 0` precondition the tool can't yet express — hence it's not her
 - `abs_branch.py` — `EQUIVALENT`: ternary vs. if/else absolute value.
 - `loop_reorder.py` — `EQUIVALENT`: reversed loop accumulation (bounded).
 - `sum_to_n.py` — `EQUIVALENT` under `assume(n >= 0)`: closed form vs. loop.
+- `array_len_count.py` — `EQUIVALENT`: `len(xs)` vs. manual count.
+- `array_sum_reorder.py` — `EQUIVALENT`: `total + x` vs. `x + total` over a list.
+- `array_count_off_by_one.py` — `COUNTEREXAMPLE`: `>` vs `>=` counting over a list.
 
 A fixture may declare an input precondition with a leading `assume(<expr>)`
 (see `sum_to_n.py`); the pair only needs to be equivalent where the precondition

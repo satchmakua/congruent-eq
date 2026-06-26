@@ -120,6 +120,17 @@ def _exec_stmt(stmt: ir.Stmt, env: dict[str, object], ctx: _Ctx) -> None:
             _exec_block(stmt.body, env, ctx)
         env.pop(stmt.var, None)  # loop variable does not escape the loop
         return
+    if isinstance(stmt, ir.ForEach):
+        seq = _eval(stmt.iterable, env, ctx)
+        if not isinstance(seq, list):
+            raise TypeError(f"{stmt.iterable!r} is not iterable")
+        if len(seq) > ctx.bound:
+            raise _OutOfBound
+        for elem in seq:
+            env[stmt.var] = _wrap(int(elem), ctx.width)
+            _exec_block(stmt.body, env, ctx)
+        env.pop(stmt.var, None)
+        return
     raise AssertionError(f"unhandled statement node: {stmt!r}")
 
 
@@ -154,6 +165,16 @@ def _eval(node: ir.Expr, env: dict[str, object], ctx: _Ctx) -> object:
     if isinstance(node, ir.IfExp):
         chosen = node.body if _truth(_eval(node.test, env, ctx)) else node.orelse
         return _eval(chosen, env, ctx)
+
+    if isinstance(node, ir.Len):
+        return len(_eval(node.value, env, ctx))  # type: ignore[arg-type]
+
+    if isinstance(node, ir.Subscript):
+        seq = _eval(node.value, env, ctx)
+        index = int(_eval(node.index, env, ctx))  # type: ignore[arg-type]
+        if not 0 <= index < len(seq):  # type: ignore[arg-type]
+            raise IndexError(index)  # out-of-range (incl. negative) is a divergence
+        return _wrap(int(seq[index]), ctx.width)  # type: ignore[index]
 
     raise AssertionError(f"unhandled expression node: {node!r}")
 

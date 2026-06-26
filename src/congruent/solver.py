@@ -37,18 +37,21 @@ def prove_equivalence(
             stage cannot soundly model; the caller should fall back to the
             differential verdict rather than guess.
     """
-    inputs = symbolic.make_input_symbols(original.params, int_width)
+    inputs, well_formed = symbolic.make_inputs(original.params, int_width, bound)
     summary_o = symbolic.summarize(original, inputs, int_width, bound)
     summary_c = symbolic.summarize(candidate, inputs, int_width, bound)
 
     solver = z3.Solver()
-    # Only consider inputs satisfying the declared preconditions...
+    # Inputs must be well-formed (e.g. list lengths within [0, bound])...
+    for constraint in well_formed:
+        solver.add(constraint)
+    # ...satisfy the declared preconditions...
     for precond in (
         symbolic.lower_preconditions(original, inputs, int_width)
         + symbolic.lower_preconditions(candidate, inputs, int_width)
     ):
         solver.add(precond)
-    # ...and where every loop stays within the bound.
+    # ...and keep every loop within the bound.
     for assumption in summary_o.assumptions + summary_c.assumptions:
         solver.add(assumption)
     solver.add(_differ(summary_o.output, summary_c.output, int_width))
@@ -58,12 +61,17 @@ def prove_equivalence(
     elapsed = time.perf_counter() - start
 
     unrolled = summary_o.unrolled or summary_c.unrolled
+    has_list = any(p.type_name == "list[int]" for p in original.params)
 
     if result == z3.unsat:
-        has_precondition = bool(original.preconditions or candidate.preconditions)
+        bounded_bits = []
+        if has_list:
+            bounded_bits.append(f"lists up to length {bound}")
         if unrolled:
-            scope_note = f"holds where every loop runs within bound {bound}"
-        elif has_precondition:
+            bounded_bits.append(f"loops up to {bound} iterations")
+        if bounded_bits:
+            scope_note = "holds within bound: " + ", ".join(bounded_bits)
+        elif original.preconditions or candidate.preconditions:
             # Loop-free but constrained: complete over the precondition's domain.
             scope_note = f"complete: agree on all {int_width}-bit inputs satisfying the precondition"
         else:
@@ -79,7 +87,9 @@ def prove_equivalence(
 
     if result == z3.sat:
         model = solver.model()
-        cx = _decode_model(model, inputs, original.params, summary_o.output, summary_c.output)
+        cx = _decode_model(
+            model, inputs, original.params, summary_o.output, summary_c.output, int_width, bound
+        )
         return Verdict(
             status=Status.COUNTEREXAMPLE,
             bound=bound,
@@ -107,16 +117,25 @@ def _differ(a: z3.ExprRef, b: z3.ExprRef, int_width: int) -> z3.ExprRef:
 
 def _decode_model(
     model: z3.ModelRef,
-    inputs: list[z3.ExprRef],
+    inputs: list,
     params: list,
     out_original: z3.ExprRef,
     out_candidate: z3.ExprRef,
+    int_width: int,
+    bound: int,
 ) -> Counterexample:
     """Turn a satisfying model into a concrete `Counterexample`."""
-    concrete = {
-        param.name: _to_py(model.eval(sym, model_completion=True))
-        for param, sym in zip(params, inputs)
-    }
+    concrete: dict[str, object] = {}
+    for param, value in zip(params, inputs):
+        if isinstance(value, symbolic.SymList):
+            length = int(_to_py(model.eval(value.length, model_completion=True)))
+            length = max(0, min(length, bound))
+            concrete[param.name] = [
+                _to_py(model.eval(z3.Select(value.arr, z3.BitVecVal(i, int_width)), model_completion=True))
+                for i in range(length)
+            ]
+        else:
+            concrete[param.name] = _to_py(model.eval(value, model_completion=True))
     return Counterexample(
         inputs=concrete,
         original_output=_to_py(model.eval(out_original, model_completion=True)),

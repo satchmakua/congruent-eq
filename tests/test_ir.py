@@ -9,6 +9,8 @@ from congruent.ir import (
     BoolOp,
     Compare,
     For,
+    ForEach,
+    Subscript,
     UnsupportedConstruct,
     parse_condition,
     parse_function,
@@ -72,6 +74,24 @@ def test_parse_precondition() -> None:
 def test_parse_condition_standalone() -> None:
     pc = parse_condition("0 <= x")
     assert pc.text == "0 <= x"
+
+
+def test_parse_foreach_over_list() -> None:
+    src = (
+        "def f(xs: list[int]) -> int:\n"
+        "    total = 0\n"
+        "    for x in xs:\n"
+        "        total = total + x\n"
+        "    return total"
+    )
+    fn = parse_function(src, "f")
+    assert fn.params[0].type_name == "list[int]"
+    assert isinstance(fn.body[1], ForEach)
+
+
+def test_parse_subscript() -> None:
+    fn = parse_function("def f(xs: list[int]) -> int:\n    return xs[0]", "f")
+    assert isinstance(fn.body[0].value, Subscript)
 
 
 @pytest.mark.parametrize(

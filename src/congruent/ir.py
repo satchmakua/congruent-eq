@@ -14,13 +14,14 @@ Supported subset (v1):
     - comparisons: < <= > >= == !=   (including chained: a < b < c)
     - boolean logic: and / or / not
     - integer and boolean literals
-    - `for <var> in range(...)` bounded loops (M2; no `return` inside the loop)
+    - `for <var> in range(...)` bounded loops (no `return` inside the loop)
+    - `list[int]` inputs: `len(xs)`, `xs[i]` (read), `for x in xs` iteration
 
 Out of scope (raise `UnsupportedConstruct` loudly — never ignored):
     while, recursion-via-call, floats, strings, I/O, global mutation,
-    list/attribute/subscript assignment, comprehensions, exceptions,
-    `return`/`break`/`continue` inside a loop. Arrays arrive later in M2 (see
-    ROADMAP.md). Refusing to model a construct is what keeps verdicts honest.
+    list/attribute/subscript *assignment*, list *outputs*, comprehensions,
+    exceptions, `return`/`break`/`continue` inside a loop. Refusing to model a
+    construct is what keeps verdicts honest.
 """
 
 from __future__ import annotations
@@ -80,7 +81,22 @@ class IfExp:
     orelse: "Expr"
 
 
-Expr = Union[Name, Const, BinOp, UnaryOp, Compare, BoolOp, IfExp]
+@dataclass(frozen=True)
+class Len:
+    """`len(<value>)` — the length of a list."""
+
+    value: "Expr"
+
+
+@dataclass(frozen=True)
+class Subscript:
+    """`<value>[<index>]` — read an element of a list."""
+
+    value: "Expr"
+    index: "Expr"
+
+
+Expr = Union[Name, Const, BinOp, UnaryOp, Compare, BoolOp, IfExp, Len, Subscript]
 
 
 # --- Statements ------------------------------------------------------------
@@ -118,7 +134,20 @@ class For:
     body: tuple["Stmt", ...]
 
 
-Stmt = Union[Return, Assign, If, For]
+@dataclass(frozen=True)
+class ForEach:
+    """`for <var> in <iterable>` — iteration over a list[int].
+
+    List inputs are bounded to length `--bound`, so iterating one is always
+    within the unroll bound by construction.
+    """
+
+    var: str
+    iterable: Expr
+    body: tuple["Stmt", ...]
+
+
+Stmt = Union[Return, Assign, If, For, ForEach]
 
 
 @dataclass(frozen=True)
@@ -297,31 +326,30 @@ def _lower_stmt(node: ast.stmt) -> Stmt:
     raise UnsupportedConstruct(f"unsupported statement: {type(node).__name__}")
 
 
-def _lower_for(node: ast.For) -> For:
+def _lower_for(node: ast.For) -> Stmt:
     if node.orelse:
         raise UnsupportedConstruct("for/else is not supported")
     if not isinstance(node.target, ast.Name):
         raise UnsupportedConstruct("loop target must be a single name")
-    if not (
-        isinstance(node.iter, ast.Call)
-        and isinstance(node.iter.func, ast.Name)
-        and node.iter.func.id == "range"
-    ):
-        raise UnsupportedConstruct("loops must iterate over range(...)")
-    args = node.iter.args
-    if node.iter.keywords or not 1 <= len(args) <= 2:
-        raise UnsupportedConstruct("only range(stop) and range(start, stop) are supported")
-    if len(args) == 1:
-        start: Expr = Const(0, "int")
-        stop = _lower_expr(args[0])
-    else:
-        start = _lower_expr(args[0])
-        stop = _lower_expr(args[1])
 
     body = _lower_block(node.body)
     if _contains_return(body):
         raise UnsupportedConstruct("`return` inside a loop is not supported yet")
-    return For(node.target.id, start, stop, body)
+
+    it = node.iter
+    if isinstance(it, ast.Call) and isinstance(it.func, ast.Name) and it.func.id == "range":
+        if it.keywords or not 1 <= len(it.args) <= 2:
+            raise UnsupportedConstruct("only range(stop) and range(start, stop) are supported")
+        if len(it.args) == 1:
+            start: Expr = Const(0, "int")
+            stop = _lower_expr(it.args[0])
+        else:
+            start = _lower_expr(it.args[0])
+            stop = _lower_expr(it.args[1])
+        return For(node.target.id, start, stop, body)
+
+    # Otherwise iterate an expression (expected to be a list[int]).
+    return ForEach(node.target.id, _lower_expr(it), body)
 
 
 def _contains_return(stmts: tuple[Stmt, ...]) -> bool:
@@ -330,7 +358,7 @@ def _contains_return(stmts: tuple[Stmt, ...]) -> bool:
             return True
         if isinstance(stmt, If) and (_contains_return(stmt.body) or _contains_return(stmt.orelse)):
             return True
-        if isinstance(stmt, For) and _contains_return(stmt.body):
+        if isinstance(stmt, (For, ForEach)) and _contains_return(stmt.body):
             return True
     return False
 
@@ -368,6 +396,18 @@ def _lower_expr(node: ast.expr) -> Expr:
 
     if isinstance(node, ast.IfExp):
         return IfExp(_lower_expr(node.test), _lower_expr(node.body), _lower_expr(node.orelse))
+
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Name) and node.func.id == "len":
+            if len(node.args) != 1 or node.keywords:
+                raise UnsupportedConstruct("len(...) takes exactly one argument")
+            return Len(_lower_expr(node.args[0]))
+        raise UnsupportedConstruct(f"unsupported call: {ast.dump(node)}")
+
+    if isinstance(node, ast.Subscript):
+        if isinstance(node.slice, ast.Slice):
+            raise UnsupportedConstruct("slice subscripts are not supported")
+        return Subscript(_lower_expr(node.value), _lower_expr(node.slice))
 
     raise UnsupportedConstruct(f"unsupported expression: {type(node).__name__}")
 

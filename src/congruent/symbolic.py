@@ -39,6 +39,18 @@ class UnsupportedForProof(Exception):
     """The symbolic stage cannot soundly model this function (yet)."""
 
 
+@dataclass(frozen=True)
+class SymList:
+    """A symbolic list[int]: a Z3 array of elements plus a symbolic length."""
+
+    arr: z3.ArrayRef
+    length: z3.ExprRef  # BitVec; constrained 0 <= length <= bound at the query
+
+
+# An environment value is a scalar Z3 expr or a symbolic list.
+_Val = "z3.ExprRef | SymList"
+
+
 @dataclass
 class Summary:
     """The symbolic result of one function."""
@@ -58,17 +70,31 @@ class _Ctx:
         self.unrolled = False
 
 
-def make_input_symbols(params: list[ir.Param], int_width: int) -> list[z3.ExprRef]:
-    """Create one fresh Z3 symbol per parameter (shared across both functions)."""
-    symbols: list[z3.ExprRef] = []
+def make_inputs(
+    params: list[ir.Param], int_width: int, bound: int
+) -> tuple[list, list[z3.BoolRef]]:
+    """Create fresh shared inputs plus well-formedness constraints.
+
+    Returns (values, constraints). A scalar param yields a Z3 symbol; a
+    `list[int]` yields a `SymList` plus a constraint bounding its length to
+    `[0, bound]` (the bounded-array domain).
+    """
+    values: list = []
+    constraints: list[z3.BoolRef] = []
     for i, param in enumerate(params):
         if param.type_name == "int":
-            symbols.append(z3.BitVec(f"in{i}", int_width))
+            values.append(z3.BitVec(f"in{i}", int_width))
         elif param.type_name == "bool":
-            symbols.append(z3.Bool(f"in{i}"))
+            values.append(z3.Bool(f"in{i}"))
+        elif param.type_name == "list[int]":
+            arr = z3.Array(f"in{i}", z3.BitVecSort(int_width), z3.BitVecSort(int_width))
+            length = z3.BitVec(f"in{i}_len", int_width)
+            values.append(SymList(arr, length))
+            zero = z3.BitVecVal(0, int_width)
+            constraints.append(z3.And(zero <= length, length <= z3.BitVecVal(bound, int_width)))
         else:
             raise UnsupportedForProof(f"parameter type {param.type_name!r} not modeled yet")
-    return symbols
+    return values, constraints
 
 
 def lower_preconditions(
@@ -120,8 +146,10 @@ def _exec_stmts(stmts, env: _Env, ctx: _Ctx, k) -> z3.ExprRef:  # k: _Env -> Exp
         return _merge(cond, then_val, else_val, ctx.w)
 
     if isinstance(head, ir.For):
-        env_after = _unroll_for(head, env, ctx)
-        return _exec_stmts(rest, env_after, ctx, k)
+        return _exec_stmts(rest, _unroll_for(head, env, ctx), ctx, k)
+
+    if isinstance(head, ir.ForEach):
+        return _exec_stmts(rest, _unroll_foreach(head, env, ctx), ctx, k)
 
     raise AssertionError(f"unhandled statement node: {head!r}")
 
@@ -142,15 +170,17 @@ def _unroll_for(loop: ir.For, env: _Env, ctx: _Ctx) -> _Env:
             f"variable(s) {sorted(missing)} assigned in a loop but not initialized before it"
         )
 
-    cur = env
+    cur = dict(env)
     for k in range(ctx.bound):
         idx = start + z3.BitVecVal(k, ctx.w)
         guard = idx < stop  # signed: iteration k runs iff start + k < stop
         body_env = dict(cur)
         body_env[loop.var] = idx
         after = _exec_block_env(loop.body, body_env, ctx)
-        after.pop(loop.var, None)  # the loop variable does not escape
-        cur = {name: _merge(guard, after[name], cur[name], ctx.w) for name in cur}
+        # Only merge the (scalar) variables the loop writes; list params and
+        # other inputs are immutable and must not be run through the scalar merge.
+        for name in written:
+            cur[name] = _merge(guard, after[name], cur[name], ctx.w)
 
     # In-bound assumption: the loop runs between 0 and `bound` times AND its
     # index window does not wrap — i.e. stop in [start, start + bound] with no
@@ -162,19 +192,48 @@ def _unroll_for(loop: ir.For, env: _Env, ctx: _Ctx) -> _Env:
     return cur
 
 
+def _unroll_foreach(loop: ir.ForEach, env: _Env, ctx: _Ctx) -> _Env:
+    ctx.unrolled = True
+    seq = _eval(loop.iterable, env, ctx)
+    if not isinstance(seq, SymList):
+        raise UnsupportedForProof("can only iterate a list[int]")
+
+    written = _assigned_names(loop.body) - {loop.var}
+    missing = written - set(env)
+    if missing:
+        raise UnsupportedForProof(
+            f"variable(s) {sorted(missing)} assigned in a loop but not initialized before it"
+        )
+
+    # No extra in-bound assumption: list length is already bounded to [0, bound]
+    # by make_inputs, so `bound` unrollings cover every valid list.
+    cur = dict(env)
+    for k in range(ctx.bound):
+        guard = z3.BitVecVal(k, ctx.w) < seq.length  # iteration k runs iff k < len
+        body_env = dict(cur)
+        body_env[loop.var] = z3.Select(seq.arr, z3.BitVecVal(k, ctx.w))
+        after = _exec_block_env(loop.body, body_env, ctx)
+        for name in written:
+            cur[name] = _merge(guard, after[name], cur[name], ctx.w)
+    return cur
+
+
 def _exec_block_env(stmts, env: _Env, ctx: _Ctx) -> _Env:
     """Execute a return-free block as an environment transformer."""
-    cur = env
+    cur = dict(env)
     for stmt in stmts:
         if isinstance(stmt, ir.Assign):
-            cur = {**cur, stmt.target: _eval(stmt.value, cur, ctx)}
+            cur[stmt.target] = _eval(stmt.value, cur, ctx)
         elif isinstance(stmt, ir.If):
             cond = _as_bool(_eval(stmt.test, cur, ctx))
             then_env = _exec_block_env(stmt.body, cur, ctx)
             else_env = _exec_block_env(stmt.orelse, cur, ctx)
-            cur = {name: _merge(cond, then_env[name], else_env[name], ctx.w) for name in cur}
+            for name in _assigned_names(stmt.body) | _assigned_names(stmt.orelse):
+                cur[name] = _merge(cond, then_env[name], else_env[name], ctx.w)
         elif isinstance(stmt, ir.For):
             cur = _unroll_for(stmt, cur, ctx)
+        elif isinstance(stmt, ir.ForEach):
+            cur = _unroll_foreach(stmt, cur, ctx)
         else:  # ir.Return — blocked by the parser, but guard anyway
             raise UnsupportedForProof("`return` inside a loop is not supported")
     return cur
@@ -188,6 +247,8 @@ def _assigned_names(stmts) -> set[str]:
         elif isinstance(stmt, ir.If):
             names |= _assigned_names(stmt.body) | _assigned_names(stmt.orelse)
         elif isinstance(stmt, ir.For):
+            names |= _assigned_names(stmt.body) - {stmt.var}
+        elif isinstance(stmt, ir.ForEach):
             names |= _assigned_names(stmt.body) - {stmt.var}
     return names
 
@@ -224,6 +285,18 @@ def _eval(node: ir.Expr, env: _Env, ctx: _Ctx) -> z3.ExprRef:
     if isinstance(node, ir.IfExp):
         cond = _as_bool(_eval(node.test, env, ctx))
         return _merge(cond, _eval(node.body, env, ctx), _eval(node.orelse, env, ctx), ctx.w)
+
+    if isinstance(node, ir.Len):
+        value = _eval(node.value, env, ctx)
+        if not isinstance(value, SymList):
+            raise UnsupportedForProof("len() of a non-list value")
+        return value.length
+
+    if isinstance(node, ir.Subscript):
+        # Sound but conservative: `xs[i]` is only safe under an in-bounds guard,
+        # which we can't add per-access without path conditions yet. Decline so
+        # the orchestrator falls back to UNKNOWN rather than risk a false proof.
+        raise UnsupportedForProof("list indexing xs[i] is not modeled in proofs yet (use iteration)")
 
     raise AssertionError(f"unhandled expression node: {node!r}")
 
