@@ -1,62 +1,288 @@
 """AST -> normalized typed IR (pipeline stage 0).
 
-Both the differential tester and the symbolic engine consume this IR rather
-than raw `ast` nodes, so the rules of the supported v1 subset live in exactly
-one place and the symbolic interpreter stays small.
+Both the differential tester and (at M1) the symbolic engine consume this IR
+rather than raw `ast` nodes, so the rules of the supported v1 subset live in
+exactly one place.
 
-Supported subset (v1 target — see ROADMAP.md M0/M1/M2):
-    - `def` with type-annotated positional parameters (int, bool, list[int], ...)
-    - `return`
-    - `if` / `else`
-    - integer & boolean arithmetic, comparison, and logical operators
-    - bounded `for ... in range(...)` loops (unrolled at M2)
+Supported subset (v1):
+    - `def` with type-annotated positional parameters (int, bool, list[int])
+    - `return <expr>`
+    - assignment to a name: `x = <expr>` (and augmented `x += <expr>`)
+    - `if` / `elif` / `else`
+    - conditional expressions: `a if c else b`
+    - integer arithmetic: + - * // %   (and unary -)
+    - comparisons: < <= > >= == !=   (including chained: a < b < c)
+    - boolean logic: and / or / not
+    - integer and boolean literals
 
-Anything outside the subset must raise `UnsupportedConstruct` loudly — never
-silently ignored. Refusing to model a construct is what keeps verdicts honest.
+Out of scope for v1 (raise `UnsupportedConstruct` loudly — never ignored):
+    loops, while, recursion-via-call, floats, strings, I/O, global mutation,
+    list/attribute/subscript assignment, comprehensions, exceptions. Bounded
+    loops and arrays arrive in M2 (see ROADMAP.md). Refusing to model a
+    construct is what keeps verdicts honest.
 """
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
+from typing import Union
 
 
 class UnsupportedConstruct(Exception):
     """Raised when source uses a construct outside the supported v1 subset."""
 
 
+# --- Expressions -----------------------------------------------------------
+
+@dataclass(frozen=True)
+class Name:
+    id: str
+
+
+@dataclass(frozen=True)
+class Const:
+    value: int | bool
+    type_name: str  # "int" | "bool"
+
+
+@dataclass(frozen=True)
+class BinOp:
+    op: str  # + - * // %
+    left: "Expr"
+    right: "Expr"
+
+
+@dataclass(frozen=True)
+class UnaryOp:
+    op: str  # - | not
+    operand: "Expr"
+
+
+@dataclass(frozen=True)
+class Compare:
+    op: str  # < <= > >= == !=
+    left: "Expr"
+    right: "Expr"
+
+
+@dataclass(frozen=True)
+class BoolOp:
+    op: str  # and | or
+    values: tuple["Expr", ...]
+
+
+@dataclass(frozen=True)
+class IfExp:
+    test: "Expr"
+    body: "Expr"
+    orelse: "Expr"
+
+
+Expr = Union[Name, Const, BinOp, UnaryOp, Compare, BoolOp, IfExp]
+
+
+# --- Statements ------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Return:
+    value: Expr
+
+
+@dataclass(frozen=True)
+class Assign:
+    target: str
+    value: Expr
+
+
+@dataclass(frozen=True)
+class If:
+    test: Expr
+    body: tuple["Stmt", ...]
+    orelse: tuple["Stmt", ...]
+
+
+Stmt = Union[Return, Assign, If]
+
+
 @dataclass(frozen=True)
 class Param:
-    """A typed function parameter, e.g. ``x: int`` or ``xs: list[int]``."""
-
     name: str
-    type_name: str  # normalized: "int" | "bool" | "list[int]" | ...
+    type_name: str  # "int" | "bool" | "list[int]"
 
 
 @dataclass
 class Function:
-    """Normalized typed IR for a single function.
-
-    `params` plus `return_type` give the difftest generator a typed signature;
-    `body` is the IR statement tree the symbolic interpreter walks. The body
-    node types are introduced in M0/M1 alongside the interpreter.
-    """
-
     name: str
     params: list[Param]
     return_type: str
-    body: object  # TODO(M0): typed Stmt/Expr node tree
+    body: tuple[Stmt, ...]
+
+
+# --- Parsing / lowering ----------------------------------------------------
+
+_BINOPS: dict[type, str] = {
+    ast.Add: "+",
+    ast.Sub: "-",
+    ast.Mult: "*",
+    ast.FloorDiv: "//",
+    ast.Mod: "%",
+}
+_CMPOPS: dict[type, str] = {
+    ast.Lt: "<",
+    ast.LtE: "<=",
+    ast.Gt: ">",
+    ast.GtE: ">=",
+    ast.Eq: "==",
+    ast.NotEq: "!=",
+}
 
 
 def parse_function(source: str, name: str) -> Function:
     """Parse `source` and return the IR `Function` named `name`.
 
-    Args:
-        source: Python source text containing the target function.
-        name: the function to extract.
-
     Raises:
         UnsupportedConstruct: the function uses a construct outside the v1 subset.
         ValueError: no function named `name` is found in `source`.
     """
-    # TODO(M0): ast.parse -> locate FunctionDef -> validate subset -> lower to IR.
-    raise NotImplementedError("IR lowering not yet implemented — see ROADMAP.md (M0)")
+    module = ast.parse(source)
+    for node in module.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return _lower_function(node)
+    raise ValueError(f"no function named {name!r} found in source")
+
+
+def _lower_function(node: ast.FunctionDef) -> Function:
+    if node.decorator_list:
+        raise UnsupportedConstruct(f"{node.name}: decorators are not supported")
+    a = node.args
+    if a.vararg or a.kwarg or a.kwonlyargs:
+        raise UnsupportedConstruct(f"{node.name}: only positional parameters are supported")
+
+    params: list[Param] = []
+    for arg in [*a.posonlyargs, *a.args]:
+        if arg.annotation is None:
+            raise UnsupportedConstruct(f"{node.name}: parameter {arg.arg!r} needs a type annotation")
+        params.append(Param(arg.arg, _normalize_type(arg.annotation)))
+
+    if node.returns is None:
+        raise UnsupportedConstruct(f"{node.name}: a return type annotation is required")
+    return_type = _normalize_type(node.returns)
+
+    body = _lower_block(_strip_docstring(node.body))
+    return Function(node.name, params, return_type, body)
+
+
+def _strip_docstring(stmts: list[ast.stmt]) -> list[ast.stmt]:
+    if (
+        stmts
+        and isinstance(stmts[0], ast.Expr)
+        and isinstance(stmts[0].value, ast.Constant)
+        and isinstance(stmts[0].value.value, str)
+    ):
+        return stmts[1:]
+    return stmts
+
+
+def _normalize_type(node: ast.expr) -> str:
+    if isinstance(node, ast.Name) and node.id in {"int", "bool"}:
+        return node.id
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id in {"list", "List"}
+        and isinstance(node.slice, ast.Name)
+        and node.slice.id == "int"
+    ):
+        return "list[int]"
+    raise UnsupportedConstruct(f"unsupported type annotation: {ast.dump(node)}")
+
+
+def _lower_block(stmts: list[ast.stmt]) -> tuple[Stmt, ...]:
+    return tuple(_lower_stmt(s) for s in stmts)
+
+
+def _lower_stmt(node: ast.stmt) -> Stmt:
+    if isinstance(node, ast.Return):
+        if node.value is None:
+            raise UnsupportedConstruct("bare `return` is not supported; return a value")
+        return Return(_lower_expr(node.value))
+
+    if isinstance(node, ast.Assign):
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            raise UnsupportedConstruct("only single-name assignment is supported")
+        return Assign(node.targets[0].id, _lower_expr(node.value))
+
+    if isinstance(node, ast.AugAssign):
+        if not isinstance(node.target, ast.Name):
+            raise UnsupportedConstruct("only single-name augmented assignment is supported")
+        op = _BINOPS.get(type(node.op))
+        if op is None:
+            raise UnsupportedConstruct(f"unsupported augmented operator: {type(node.op).__name__}")
+        target = node.target.id
+        return Assign(target, BinOp(op, Name(target), _lower_expr(node.value)))
+
+    if isinstance(node, ast.If):
+        return If(
+            _lower_expr(node.test),
+            _lower_block(node.body),
+            _lower_block(node.orelse),
+        )
+
+    if isinstance(node, ast.Pass):
+        # harmless no-op; lower to an empty if-false would be silly — drop it.
+        # Represent as an If with empty branches so the type stays simple.
+        return If(Const(False, "bool"), (), ())
+
+    raise UnsupportedConstruct(f"unsupported statement: {type(node).__name__}")
+
+
+def _lower_expr(node: ast.expr) -> Expr:
+    if isinstance(node, ast.Name):
+        return Name(node.id)
+
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, bool):
+            return Const(node.value, "bool")
+        if isinstance(node.value, int):
+            return Const(node.value, "int")
+        raise UnsupportedConstruct(f"unsupported literal: {node.value!r}")
+
+    if isinstance(node, ast.BinOp):
+        op = _BINOPS.get(type(node.op))
+        if op is None:
+            raise UnsupportedConstruct(f"unsupported operator: {type(node.op).__name__}")
+        return BinOp(op, _lower_expr(node.left), _lower_expr(node.right))
+
+    if isinstance(node, ast.UnaryOp):
+        if isinstance(node.op, ast.USub):
+            return UnaryOp("-", _lower_expr(node.operand))
+        if isinstance(node.op, ast.Not):
+            return UnaryOp("not", _lower_expr(node.operand))
+        raise UnsupportedConstruct(f"unsupported unary operator: {type(node.op).__name__}")
+
+    if isinstance(node, ast.BoolOp):
+        op = "and" if isinstance(node.op, ast.And) else "or"
+        return BoolOp(op, tuple(_lower_expr(v) for v in node.values))
+
+    if isinstance(node, ast.Compare):
+        return _lower_compare(node)
+
+    if isinstance(node, ast.IfExp):
+        return IfExp(_lower_expr(node.test), _lower_expr(node.body), _lower_expr(node.orelse))
+
+    raise UnsupportedConstruct(f"unsupported expression: {type(node).__name__}")
+
+
+def _lower_compare(node: ast.Compare) -> Expr:
+    """Lower a comparison, desugaring chained `a < b < c` to `(a < b) and (b < c)`."""
+    operands = [node.left, *node.comparators]
+    parts: list[Expr] = []
+    for i, op_node in enumerate(node.ops):
+        op = _CMPOPS.get(type(op_node))
+        if op is None:
+            raise UnsupportedConstruct(f"unsupported comparison: {type(op_node).__name__}")
+        parts.append(Compare(op, _lower_expr(operands[i]), _lower_expr(operands[i + 1])))
+    if len(parts) == 1:
+        return parts[0]
+    return BoolOp("and", tuple(parts))

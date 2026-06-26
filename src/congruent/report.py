@@ -31,8 +31,10 @@ def format_verdict(verdict: Verdict) -> str:
         lines.append(f"  inputs:    {shown}")
         lines.append(f"  original:  {cx.original_output!r}")
         lines.append(f"  candidate: {cx.candidate_output!r}")
+    elif verdict.status is Status.UNKNOWN:
+        lines.append(f"  no counterexample found up to bound {verdict.bound} (not a proof)")
 
     for assumption in verdict.assumptions:
-        lines.append(f"  assumption: {assumption}")
+        lines.append(f"  note: {assumption}")
 
     return "\n".join(lines)

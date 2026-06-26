@@ -1,8 +1,10 @@
-"""Tests for the equivalence pipeline.
+"""Pipeline tests driven by the fixture eval set (see fixtures/README.md).
 
-The import/smoke tests run today. The fixture-driven equivalence tests are the
-real eval set; they're marked xfail until the engine lands (M0/M1) and flip to
-passing as each stage is implemented.
+M0 guarantees from the differential stage:
+  - counterexample pairs are caught (status COUNTEREXAMPLE),
+  - equivalent pairs are never falsely disproven (status not COUNTEREXAMPLE).
+Proving equivalence (status EQUIVALENT) needs the symbolic stage and is xfail
+until M1.
 """
 
 from __future__ import annotations
@@ -14,12 +16,34 @@ import pytest
 
 import congruent
 from congruent.equiv import Status, Verdict
+from congruent.ir import parse_function
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
-def _fixture_modules() -> list[str]:
+def _fixture_names() -> list[str]:
     return sorted(p.stem for p in FIXTURES_DIR.glob("*.py"))
+
+
+def _load_fixture(name: str) -> object:
+    spec = importlib.util.spec_from_file_location(name, FIXTURES_DIR / f"{name}.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _verdict_for(name: str) -> Verdict:
+    source = (FIXTURES_DIR / f"{name}.py").read_text(encoding="utf-8")
+    return congruent.check(
+        parse_function(source, "original"),
+        parse_function(source, "candidate"),
+        bound=8,
+    )
+
+
+def _names_with(expected: str) -> list[str]:
+    return [n for n in _fixture_names() if _load_fixture(n).EXPECTED == expected]
 
 
 def test_package_imports() -> None:
@@ -34,27 +58,36 @@ def test_verdict_model() -> None:
     assert v.counterexample is None
 
 
-def _load_fixture(name: str) -> object:
-    spec = importlib.util.spec_from_file_location(name, FIXTURES_DIR / f"{name}.py")
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-@pytest.mark.parametrize("name", _fixture_modules())
+@pytest.mark.parametrize("name", _fixture_names())
 def test_fixture_is_well_formed(name: str) -> None:
-    """Every fixture follows the documented convention (see fixtures/README.md)."""
     mod = _load_fixture(name)
     assert callable(getattr(mod, "original"))
     assert callable(getattr(mod, "candidate"))
     assert mod.EXPECTED in {"EQUIVALENT", "COUNTEREXAMPLE"}
 
 
-@pytest.mark.xfail(reason="engine not yet implemented — see ROADMAP.md (M0/M1)", strict=True)
-@pytest.mark.parametrize("name", _fixture_modules())
-def test_fixture_verdict(name: str) -> None:
-    """The eval set: each fixture should produce its EXPECTED verdict."""
-    mod = _load_fixture(name)
-    verdict = congruent.check(mod.original, mod.candidate, bound=8)
-    assert verdict.status.value == mod.EXPECTED
+@pytest.mark.parametrize("name", _fixture_names())
+def test_fixture_parses(name: str) -> None:
+    source = (FIXTURES_DIR / f"{name}.py").read_text(encoding="utf-8")
+    assert parse_function(source, "original").params is not None
+    assert parse_function(source, "candidate").params is not None
+
+
+@pytest.mark.parametrize("name", _names_with("COUNTEREXAMPLE"))
+def test_counterexample_fixtures_are_caught(name: str) -> None:
+    verdict = _verdict_for(name)
+    assert verdict.status is Status.COUNTEREXAMPLE
+    assert verdict.counterexample is not None
+    assert verdict.counterexample.inputs  # carries the concrete diverging input
+
+
+@pytest.mark.parametrize("name", _names_with("EQUIVALENT"))
+def test_equivalent_fixtures_not_falsely_disproven(name: str) -> None:
+    # M0: difftest must never invent a counterexample for an equivalent pair.
+    assert _verdict_for(name).status is not Status.COUNTEREXAMPLE
+
+
+@pytest.mark.xfail(reason="equivalence proofs land in M1 (symbolic stage)", strict=True)
+@pytest.mark.parametrize("name", _names_with("EQUIVALENT"))
+def test_equivalent_fixtures_are_proven(name: str) -> None:
+    assert _verdict_for(name).status is Status.EQUIVALENT

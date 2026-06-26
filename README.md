@@ -20,10 +20,11 @@ The credibility of this tool is its honesty about what it does and doesn't do. v
 | Bounded loops, unrolled to depth `k` (reported honestly) | Heap aliasing, full object semantics |
 | One language: a **Python** subset (C is a stretch goal) | Full language semantics |
 
-Two outputs only:
+Verdicts:
 
-- **`EQUIVALENT up to bound N`** — no diverging input exists within the bound.
+- **`EQUIVALENT up to bound N`** — no diverging input exists within the bound *(requires the symbolic stage — M1)*.
 - **`COUNTEREXAMPLE: <input>`** — a concrete input where the two functions disagree, with both outputs.
+- **`UNKNOWN`** — no counterexample found, but equivalence not proven (e.g. M0, before the symbolic stage exists). Never silently upgraded to `EQUIVALENT`.
 
 Congruent never claims unconditional soundness. Every verdict carries its bound and assumptions.
 
@@ -66,20 +67,25 @@ def mid(lo: int, hi: int) -> int:
     return (lo + hi) // 2
 ```
 
-Target behavior:
+Congruent catches it today (M0, differential stage):
 
 ```console
 $ congruent original.py:mid candidate.py:mid --bound 8 --int-width 32
-COUNTEREXAMPLE  (stage: symbolic, 0.04s)
-  inputs:    lo = 2000000000, hi = 2000000000
-  original:  2000000000
-  candidate: -147483648        # 32-bit overflow in (lo + hi)
-  assumptions: 32-bit two's-complement integers
+COUNTEREXAMPLE  (stage: difftest)
+  inputs:    lo = 1, hi = 2147483647
+  original:  1073741824
+  candidate: -1073741824        # 32-bit overflow in (lo + hi)
+  note: 32-bit two's-complement integers
 ```
 
 One screenshot of *proof-or-counterexample on a real AI refactor* communicates the whole value.
 
-> **Status: pre-implementation / walking skeleton.** The structure, interfaces, and data model are in place; the engine stages are being built. The output above is the M1 target, not yet wired.
+> **Status: M0 (walking skeleton) is live.** The differential stage parses the
+> Python subset, evaluates both functions under a fixed-width integer model, and
+> returns concrete counterexamples — overflow bugs included. What it *cannot* yet
+> do is return `EQUIVALENT`: proving the *absence* of a counterexample needs the
+> symbolic/SMT stage (M1), so equivalent pairs currently report `UNKNOWN`. See
+> [ROADMAP.md](ROADMAP.md).
 
 ---
 

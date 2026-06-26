@@ -3,17 +3,23 @@
 This module owns the `Verdict` result type and the top-level `check()` entry
 point. `check()` runs the layered pipeline, escalating from cheap to expensive:
 
-    Stage 1  differential testing  (difftest.py)  — milliseconds
-    Stage 2  symbolic execution    (symbolic.py)  — SMT solve via solver.py
+    Stage 1  differential testing  (difftest.py)  — milliseconds        [M0]
+    Stage 2  symbolic execution    (symbolic.py)  — SMT solve via solver [M1]
 
 A counterexample at any stage short-circuits and is returned immediately.
 Reaching `UNSAT` in the symbolic stage yields `EQUIVALENT up to bound N`.
+
+At M0 only Stage 1 exists, so the possible verdicts are COUNTEREXAMPLE (a
+disagreement was found), UNKNOWN (none found — NOT a proof of equivalence), or
+ERROR (e.g. mismatched signatures). EQUIVALENT arrives with Stage 2.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+
+from congruent.ir import Function
 
 
 class Status(str, Enum):
@@ -51,30 +57,62 @@ class Verdict:
 
 
 def check(
-    original: object,
-    candidate: object,
+    original: Function,
+    candidate: Function,
     *,
     bound: int = 8,
     int_width: int = 32,
+    trials: int = 2000,
+    seed: int = 0,
 ) -> Verdict:
     """Decide behavioral equivalence of two functions up to `bound`.
 
     Args:
-        original: the reference function (parsed IR or callable — TBD in M0).
-        candidate: the rewritten function to compare against the reference.
+        original: the reference function IR (see `ir.parse_function`).
+        candidate: the rewritten function IR to compare against the reference.
         bound: loop/recursion unroll depth and array-length bound.
         int_width: bit width for the fixed-width integer model.
+        trials: random inputs to sample in the differential stage.
+        seed: RNG seed, so a verdict is reproducible.
 
     Returns:
-        A `Verdict`. `EQUIVALENT` is always qualified by `bound` and
-        `assumptions`; `COUNTEREXAMPLE` carries a concrete diverging input.
-
-    Pipeline (to be wired in M0/M1):
-        1. difftest.find_counterexample(...) -> Counterexample | None
-        2. symbolic + solver -> UNSAT (EQUIVALENT) | SAT (COUNTEREXAMPLE)
+        A `Verdict`. `COUNTEREXAMPLE` carries a concrete diverging input;
+        `UNKNOWN` means difftest found nothing (NOT a proof — Stage 2 lands in
+        M1); `ERROR` covers e.g. mismatched signatures.
     """
-    # TODO(M0): run difftest prefilter; return COUNTEREXAMPLE on a hit.
-    # TODO(M1): build symbolic constraints, solve, decode model.
-    raise NotImplementedError(
-        "equivalence engine not yet implemented — see ROADMAP.md (M0/M1)"
+    from congruent.difftest import find_counterexample  # local import avoids a cycle
+
+    assumptions = [f"{int_width}-bit two's-complement integers"]
+
+    orig_types = [p.type_name for p in original.params]
+    cand_types = [p.type_name for p in candidate.params]
+    if orig_types != cand_types:
+        return Verdict(
+            status=Status.ERROR,
+            bound=bound,
+            stage="parse",
+            assumptions=[f"signatures differ: original {orig_types} vs candidate {cand_types}"],
+        )
+
+    # Stage 1 — differential testing.
+    cx = find_counterexample(
+        original, candidate, bound=bound, int_width=int_width, trials=trials, seed=seed
+    )
+    if cx is not None:
+        return Verdict(
+            status=Status.COUNTEREXAMPLE,
+            bound=bound,
+            counterexample=cx,
+            stage="difftest",
+            assumptions=assumptions,
+        )
+
+    # TODO(M1): escalate to the symbolic stage; UNSAT -> EQUIVALENT, SAT -> CX.
+    return Verdict(
+        status=Status.UNKNOWN,
+        bound=bound,
+        stage="difftest",
+        assumptions=assumptions
+        + ["no counterexample found by differential testing; "
+           "equivalence not proven (symbolic stage lands in M1 — see ROADMAP.md)"],
     )

@@ -4,15 +4,16 @@ Congruent ships publicly between **M1 and M3** — the honest, bounded tool is t
 
 ## Milestones
 
-### M0 — Walking skeleton
-CLI parses two functions; Stage-1 differential tester only; produces a `Verdict` and a formatted report. The structure exists and runs end-to-end on the difftest path.
+### M0 — Walking skeleton ✅
+CLI parses two functions; Stage-1 differential tester only; produces a `Verdict` and a formatted report. Runs end-to-end on the difftest path.
 
 - [x] Repo layout, packaging, CI scaffold
 - [x] `Verdict` / `Counterexample` data model
-- [ ] `ir.parse_function` for the v1 Python subset (loud `UnsupportedConstruct`)
-- [ ] `difftest` random + boundary generation from a typed signature
-- [ ] `cli` wires parse → difftest → report
-- [ ] First fixtures (one equivalent pair, one counterexample pair)
+- [x] `ir.parse_function` for the v1 Python subset (loud `UnsupportedConstruct`)
+- [x] Fixed-width (two's-complement) concrete interpreter over the IR
+- [x] `difftest` random + boundary generation from a typed signature
+- [x] `cli` wires parse → difftest → report (exit codes 0/1/2)
+- [x] Fixtures: two counterexample pairs, two equivalent pairs
 
 ### M1 — Symbolic core *(credibility milestone)*
 Integer/bool arithmetic + branches lowered to Z3; `UNSAT`/`SAT` → verdict; decode SAT models back to concrete counterexamples.

@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from congruent.equiv import Status, check
+from congruent.ir import UnsupportedConstruct, parse_function
 from congruent.report import format_verdict
 
 
@@ -53,21 +55,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    (orig_path, orig_fn) = args.original
-    (cand_path, cand_fn) = args.candidate
+    (orig_path, orig_name) = args.original
+    (cand_path, cand_name) = args.candidate
 
-    # TODO(M0): parse both files to IR via ir.parse_function, then pass to check().
     try:
-        verdict = check(
-            (orig_path, orig_fn),
-            (cand_path, cand_fn),
-            bound=args.bound,
-            int_width=args.int_width,
-        )
-    except NotImplementedError as exc:
-        print(f"congruent: not yet implemented: {exc}", file=sys.stderr)
+        original = parse_function(Path(orig_path).read_text(encoding="utf-8"), orig_name)
+        candidate = parse_function(Path(cand_path).read_text(encoding="utf-8"), cand_name)
+    except FileNotFoundError as exc:
+        print(f"congruent: file not found: {exc.filename}", file=sys.stderr)
+        return 2
+    except (UnsupportedConstruct, ValueError) as exc:
+        print(f"congruent: cannot parse input: {exc}", file=sys.stderr)
         return 2
 
+    verdict = check(original, candidate, bound=args.bound, int_width=args.int_width)
     print(format_verdict(verdict))
     return {
         Status.EQUIVALENT: 0,

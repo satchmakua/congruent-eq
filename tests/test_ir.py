@@ -1,0 +1,65 @@
+"""Parser / subset-validation tests for `congruent.ir`."""
+
+from __future__ import annotations
+
+import pytest
+
+from congruent.ir import (
+    BinOp,
+    BoolOp,
+    Compare,
+    UnsupportedConstruct,
+    parse_function,
+)
+
+
+def test_parse_basic_signature() -> None:
+    fn = parse_function("def f(x: int, y: bool) -> int:\n    return x", "f")
+    assert fn.name == "f"
+    assert [(p.name, p.type_name) for p in fn.params] == [("x", "int"), ("y", "bool")]
+    assert fn.return_type == "int"
+
+
+def test_parse_list_int_param() -> None:
+    fn = parse_function("def f(xs: list[int]) -> int:\n    return 0", "f")
+    assert fn.params[0].type_name == "list[int]"
+
+
+def test_missing_function_raises_value_error() -> None:
+    with pytest.raises(ValueError):
+        parse_function("def f(x: int) -> int:\n    return x", "g")
+
+
+def test_chained_compare_desugars_to_boolop() -> None:
+    fn = parse_function("def f(x: int) -> bool:\n    return 0 < x < 10", "f")
+    ret = fn.body[0]
+    assert isinstance(ret.value, BoolOp)
+    assert ret.value.op == "and"
+    assert all(isinstance(c, Compare) for c in ret.value.values)
+
+
+def test_aug_assign_desugars_to_binop() -> None:
+    fn = parse_function("def f(x: int) -> int:\n    x += 1\n    return x", "f")
+    assign = fn.body[0]
+    assert assign.target == "x"
+    assert isinstance(assign.value, BinOp) and assign.value.op == "+"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def f(x: int) -> int:\n    while x:\n        x = x - 1\n    return x",  # while loop
+        "def f(x: int) -> int:\n    for i in range(x):\n        x = x + 1\n    return x",  # for loop
+        "def f(x: float) -> float:\n    return x",  # float type
+        "def f(x: int) -> int:\n    import os\n    return x",  # import
+        "def f(x: int) -> int:\n    return x / 2",  # true division (-> float)
+        "def f(x: int) -> int:\n    return x ** 2",  # exponentiation
+        "def f(x: int):\n    return x",  # missing return annotation
+        "def f(x) -> int:\n    return x",  # missing param annotation
+        "def f(x: int) -> int:\n    return",  # bare return
+        "def f(x: int) -> str:\n    return 'a'",  # string literal / type
+    ],
+)
+def test_unsupported_constructs_raise(source: str) -> None:
+    with pytest.raises(UnsupportedConstruct):
+        parse_function(source, "f")
