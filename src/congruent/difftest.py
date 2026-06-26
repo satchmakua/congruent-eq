@@ -60,16 +60,36 @@ def _truth(value: object) -> bool:
     return value != 0 if isinstance(value, int) and not isinstance(value, bool) else bool(value)
 
 
+def _bind_params(fn: Function, values: list[object], width: int) -> dict[str, object]:
+    return {
+        p.name: (_wrap(v, width) if p.type_name == "int" else v)
+        for p, v in zip(fn.params, values)
+    }
+
+
 def _eval_function(fn: Function, args: list[object], width: int, bound: int) -> object:
-    env: dict[str, object] = {}
-    for param, value in zip(fn.params, args):
-        env[param.name] = _wrap(value, width) if param.type_name == "int" else value
+    env = _bind_params(fn, args, width)
     ctx = _Ctx(width, bound)
     try:
         _exec_block(fn.body, env, ctx)
     except _Return as r:
         return r.value
     raise ValueError(f"{fn.name}: control reached end of function without returning")
+
+
+def _preconditions_hold(
+    functions: tuple[Function, ...], values: list[object], ctx: _Ctx
+) -> bool:
+    """True if every function's preconditions hold for `values`."""
+    for fn in functions:
+        env = _bind_params(fn, values, ctx.width)
+        for pc in fn.preconditions:
+            try:
+                if not _truth(_eval(pc.expr, env, ctx)):
+                    return False
+            except Exception:  # noqa: BLE001 — unevaluable precondition: exclude the input
+                return False
+    return True
 
 
 def _exec_block(stmts: tuple[ir.Stmt, ...], env: dict[str, object], ctx: _Ctx) -> None:
@@ -90,7 +110,10 @@ def _exec_stmt(stmt: ir.Stmt, env: dict[str, object], ctx: _Ctx) -> None:
     if isinstance(stmt, ir.For):
         start = int(_eval(stmt.start, env, ctx))  # type: ignore[arg-type]
         stop = int(_eval(stmt.stop, env, ctx))  # type: ignore[arg-type]
-        if stop - start > ctx.bound:
+        # Mirror the symbolic in-bound condition: 0..bound iterations with no
+        # index-window wrap (so an overflowing range is skipped, not run empty).
+        _, imax = _int_min_max(ctx.width)
+        if not (start + ctx.bound <= imax and start <= stop <= start + ctx.bound):
             raise _OutOfBound
         for i in range(start, stop):
             env[stmt.var] = _wrap(i, ctx.width)
@@ -226,7 +249,10 @@ def find_counterexample(
         [_random_value(t, int_width, bound, rng) for t in types] for _ in range(trials)
     )
 
+    pc_ctx = _Ctx(int_width, bound)
     for values in inputs:
+        if not _preconditions_hold((original, candidate), values, pc_ctx):
+            continue  # input violates a declared precondition — out of scope
         cx = _compare(original, candidate, values, int_width, bound)
         if cx is not None:
             return cx

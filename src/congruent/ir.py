@@ -127,12 +127,21 @@ class Param:
     type_name: str  # "int" | "bool" | "list[int]"
 
 
+@dataclass(frozen=True)
+class Precondition:
+    """An input precondition declared via a leading `assume(<expr>)` statement."""
+
+    expr: Expr
+    text: str  # source form, for verdict notes
+
+
 @dataclass
 class Function:
     name: str
     params: list[Param]
     return_type: str
     body: tuple[Stmt, ...]
+    preconditions: tuple[Precondition, ...] = ()
 
 
 # --- Parsing / lowering ----------------------------------------------------
@@ -185,8 +194,37 @@ def _lower_function(node: ast.FunctionDef) -> Function:
         raise UnsupportedConstruct(f"{node.name}: a return type annotation is required")
     return_type = _normalize_type(node.returns)
 
-    body = _lower_block(_strip_docstring(node.body))
-    return Function(node.name, params, return_type, body)
+    preconditions, rest = _extract_preconditions(_strip_docstring(node.body))
+    body = _lower_block(rest)
+    return Function(node.name, params, return_type, body, preconditions)
+
+
+def _is_assume_call(node: ast.stmt) -> bool:
+    return (
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "assume"
+    )
+
+
+def _extract_preconditions(stmts: list[ast.stmt]) -> tuple[tuple[Precondition, ...], list[ast.stmt]]:
+    """Peel leading `assume(<expr>)` statements off the body into preconditions."""
+    preconds: list[Precondition] = []
+    i = 0
+    while i < len(stmts) and _is_assume_call(stmts[i]):
+        call = stmts[i].value
+        if len(call.args) != 1 or call.keywords:
+            raise UnsupportedConstruct("assume(...) takes exactly one boolean argument")
+        preconds.append(Precondition(_lower_expr(call.args[0]), ast.unparse(call.args[0])))
+        i += 1
+    return tuple(preconds), stmts[i:]
+
+
+def parse_condition(source: str) -> Precondition:
+    """Parse a single boolean expression (e.g. a CLI `--assume` string)."""
+    tree = ast.parse(source, mode="eval")
+    return Precondition(_lower_expr(tree.body), source.strip())
 
 
 def _strip_docstring(stmts: list[ast.stmt]) -> list[ast.stmt]:
@@ -219,6 +257,9 @@ def _lower_block(stmts: list[ast.stmt]) -> tuple[Stmt, ...]:
 
 
 def _lower_stmt(node: ast.stmt) -> Stmt:
+    if _is_assume_call(node):
+        raise UnsupportedConstruct("assume(...) is only allowed as a leading statement of the function")
+
     if isinstance(node, ast.Return):
         if node.value is None:
             raise UnsupportedConstruct("bare `return` is not supported; return a value")

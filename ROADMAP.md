@@ -30,8 +30,8 @@ Known M1 limitations (not false proofs — they fall back to UNKNOWN): division/
 - [x] `for ... in range(...)` loops: unroll to depth `bound`, report the bound
 - [x] Bounded model checking: in-bound assumption (loop trip count ≤ bound), so loop verdicts read "EQUIVALENT up to bound N"
 - [x] Concrete interpreter caps loops at `bound` (difftest stays in the same domain)
+- [x] Input preconditions: leading `assume(<expr>)` statements + CLI `--assume`, honored by both stages
 - [ ] `return` / `break` / `continue` inside loops
-- [ ] Input preconditions (`assume`), so e.g. `sum_to_n` can be asked over `n >= 0`
 - [ ] Fixed-length arrays/lists as symbolic inputs (indexing, `len`, iteration)
 - [ ] Optionally bounded strings
 

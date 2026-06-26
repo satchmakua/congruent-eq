@@ -100,13 +100,27 @@ EQUIVALENT  (stage: symbolic, 0.01s)
   note: holds where every loop runs within bound 8
 ```
 
-> **Status: M0 + M1 live; M2 (loops) landed.** The differential stage catches
+And you can scope the question with a **precondition** — equivalence often only holds on part of the input domain:
+
+```console
+$ congruent ident.py:f abs.py:g                  # x  vs  (x if x>=0 else -x)
+COUNTEREXAMPLE  (stage: difftest)
+  inputs: x = -1                                 # they disagree on negatives
+$ congruent ident.py:f abs.py:g --assume 'x >= 0'
+EQUIVALENT  (stage: symbolic, 0.00s)
+  note: precondition: x >= 0
+```
+
+Declare a precondition inline with a leading `assume(...)` in the reference function, or pass `--assume` on the CLI.
+
+> **Status: M0 + M1 live; M2 in progress.** The differential stage catches
 > counterexamples (overflow included) under a fixed-width integer model; the
 > symbolic stage lowers both functions to Z3 bitvector expressions and returns
 > `EQUIVALENT` (UNSAT), a `COUNTEREXAMPLE` (SAT, decoded to concrete inputs), or
 > `UNKNOWN`. `for ... in range(...)` loops are unrolled to `--bound` via bounded
-> model checking. Remaining M2 work: arrays, input preconditions, and `return`
-> inside loops. See [ROADMAP.md](ROADMAP.md).
+> model checking, and `assume(...)` preconditions restrict the input domain.
+> Remaining M2 work: arrays and `return` inside loops. See
+> [ROADMAP.md](ROADMAP.md).
 
 ---
 
@@ -130,6 +144,7 @@ congruent path/to/original.py:func_name path/to/candidate.py:func_name --bound 8
 | --- | --- | --- |
 | `--bound N` | `8` | Loop/recursion unroll depth and array-length bound |
 | `--int-width W` | `32` | Bit width for the fixed-width integer model |
+| `--assume EXPR` | — | Precondition on the inputs, e.g. `--assume 'n >= 0'` (repeatable) |
 
 ## Layout
 

@@ -10,6 +10,7 @@ from congruent.ir import (
     Compare,
     For,
     UnsupportedConstruct,
+    parse_condition,
     parse_function,
 )
 
@@ -60,10 +61,24 @@ def test_parse_for_range_loop() -> None:
     assert loop.var == "i"
 
 
+def test_parse_precondition() -> None:
+    src = "def f(n: int) -> int:\n    assume(n >= 0)\n    return n"
+    fn = parse_function(src, "f")
+    assert len(fn.preconditions) == 1
+    assert fn.preconditions[0].text == "n >= 0"
+    assert len(fn.body) == 1  # the assume is peeled off the body
+
+
+def test_parse_condition_standalone() -> None:
+    pc = parse_condition("0 <= x")
+    assert pc.text == "0 <= x"
+
+
 @pytest.mark.parametrize(
     "source",
     [
         "def f(x: int) -> int:\n    while x:\n        x = x - 1\n    return x",  # while loop
+        "def f(x: int) -> int:\n    x = x + 1\n    assume(x > 0)\n    return x",  # non-leading assume
         "def f(x: int) -> int:\n    for i in range(x):\n        return i",  # return in loop
         "def f(x: int) -> int:\n    for i in range(x):\n        pass\n    else:\n        pass\n    return x",  # for/else
         "def f(x: int) -> int:\n    for i in range(0, x, 2):\n        x = x + 1\n    return x",  # range step

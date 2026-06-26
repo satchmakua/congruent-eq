@@ -83,6 +83,11 @@ def check(
     from congruent.difftest import find_counterexample  # local import avoids a cycle
 
     assumptions = [f"{int_width}-bit two's-complement integers"]
+    precond_texts = [pc.text for pc in original.preconditions] + [
+        pc.text for pc in candidate.preconditions
+    ]
+    if precond_texts:
+        assumptions.append("precondition: " + " and ".join(precond_texts))
 
     orig_types = [p.type_name for p in original.params]
     cand_types = [p.type_name for p in candidate.params]

@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 from congruent.equiv import Status, check
-from congruent.ir import UnsupportedConstruct, parse_function
+from congruent.ir import UnsupportedConstruct, parse_condition, parse_function
 from congruent.report import format_verdict
 
 
@@ -48,6 +48,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--int-width", type=int, default=32,
         help="bit width for the fixed-width integer model (default: 32)",
     )
+    parser.add_argument(
+        "--assume", action="append", metavar="EXPR", default=[],
+        help="precondition on the inputs, e.g. --assume 'n >= 0' (repeatable)",
+    )
     return parser
 
 
@@ -61,10 +65,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         original = parse_function(Path(orig_path).read_text(encoding="utf-8"), orig_name)
         candidate = parse_function(Path(cand_path).read_text(encoding="utf-8"), cand_name)
+        original.preconditions += tuple(parse_condition(a) for a in args.assume)
     except FileNotFoundError as exc:
         print(f"congruent: file not found: {exc.filename}", file=sys.stderr)
         return 2
-    except (UnsupportedConstruct, ValueError) as exc:
+    except (UnsupportedConstruct, ValueError, SyntaxError) as exc:
         print(f"congruent: cannot parse input: {exc}", file=sys.stderr)
         return 2
 

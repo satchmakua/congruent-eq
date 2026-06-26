@@ -96,6 +96,24 @@ def test_loop_off_by_one_is_a_counterexample() -> None:
     assert _check(_SUM, plus_one).status is Status.COUNTEREXAMPLE
 
 
+# identity vs. absolute value: equal exactly when x >= 0.
+_ABS = "def g(x: int) -> int:\n    return x if x >= 0 else -x"
+
+
+def test_precondition_unlocks_equivalence() -> None:
+    ident = "def f(x: int) -> int:\n    assume(x >= 0)\n    return x"
+    verdict = _check(ident, _ABS)
+    assert verdict.status is Status.EQUIVALENT
+    assert any("precondition" in note for note in verdict.assumptions)
+
+
+def test_without_precondition_is_a_counterexample() -> None:
+    ident = "def f(x: int) -> int:\n    return x"
+    verdict = _check(ident, _ABS)
+    assert verdict.status is Status.COUNTEREXAMPLE
+    assert verdict.counterexample.inputs["x"] < 0
+
+
 def test_loop_variable_not_initialized_before_loop_falls_back() -> None:
     # `last` is assigned only inside the loop; the symbolic stage declines to
     # model it (would be unbound if the loop runs zero times) -> UNKNOWN, not a

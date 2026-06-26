@@ -42,9 +42,14 @@ def prove_equivalence(
     summary_c = symbolic.summarize(candidate, inputs, int_width, bound)
 
     solver = z3.Solver()
-    # Only ask about inputs where every loop stays within the bound.
-    in_bounds = summary_o.assumptions + summary_c.assumptions
-    for assumption in in_bounds:
+    # Only consider inputs satisfying the declared preconditions...
+    for precond in (
+        symbolic.lower_preconditions(original, inputs, int_width)
+        + symbolic.lower_preconditions(candidate, inputs, int_width)
+    ):
+        solver.add(precond)
+    # ...and where every loop stays within the bound.
+    for assumption in summary_o.assumptions + summary_c.assumptions:
         solver.add(assumption)
     solver.add(_differ(summary_o.output, summary_c.output, int_width))
 
@@ -55,10 +60,14 @@ def prove_equivalence(
     unrolled = summary_o.unrolled or summary_c.unrolled
 
     if result == z3.unsat:
+        has_precondition = bool(original.preconditions or candidate.preconditions)
         if unrolled:
             scope_note = f"holds where every loop runs within bound {bound}"
+        elif has_precondition:
+            # Loop-free but constrained: complete over the precondition's domain.
+            scope_note = f"complete: agree on all {int_width}-bit inputs satisfying the precondition"
         else:
-            # Loop-free: the summary is exact, so UNSAT covers every input.
+            # Loop-free and unconstrained: the summary is exact for every input.
             scope_note = f"complete: agree on all {int_width}-bit inputs (no loops to bound)"
         return Verdict(
             status=Status.EQUIVALENT,

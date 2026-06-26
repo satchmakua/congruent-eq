@@ -37,3 +37,8 @@ needs an `n >= 0` precondition the tool can't yet express — hence it's not her
 - `distribute.py` — `EQUIVALENT`: distributivity of `*` over `+` (holds mod 2**w).
 - `abs_branch.py` — `EQUIVALENT`: ternary vs. if/else absolute value.
 - `loop_reorder.py` — `EQUIVALENT`: reversed loop accumulation (bounded).
+- `sum_to_n.py` — `EQUIVALENT` under `assume(n >= 0)`: closed form vs. loop.
+
+A fixture may declare an input precondition with a leading `assume(<expr>)`
+(see `sum_to_n.py`); the pair only needs to be equivalent where the precondition
+holds.

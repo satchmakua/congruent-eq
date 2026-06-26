@@ -13,9 +13,9 @@ and M2 could disagree:
 
 **Bounded model checking.** A loop is unrolled `bound` times; iteration k only
 takes effect under the guard `start + k < stop`. We also record an *in-bound
-assumption* — that a `(bound)`-th iteration is not needed — so the equivalence
-query is only asked where every loop stays within the bound. That is what makes
-a loop verdict an honest "EQUIVALENT up to bound N".
+assumption* — that the loop runs 0..`bound` times and its index window does not
+wrap — so the equivalence query is only asked where every loop stays within the
+bound. That is what makes a loop verdict an honest "EQUIVALENT up to bound N".
 
 Anything not soundly modeled (loop bodies that `return`, division by a
 non-constant/zero divisor, list params, variables first assigned inside a loop)
@@ -69,6 +69,15 @@ def make_input_symbols(params: list[ir.Param], int_width: int) -> list[z3.ExprRe
         else:
             raise UnsupportedForProof(f"parameter type {param.type_name!r} not modeled yet")
     return symbols
+
+
+def lower_preconditions(
+    function: Function, input_symbols: list[z3.ExprRef], int_width: int
+) -> list[z3.BoolRef]:
+    """Lower a function's `assume(...)` preconditions to Z3 boolean constraints."""
+    env: _Env = {p.name: sym for p, sym in zip(function.params, input_symbols)}
+    ctx = _Ctx(int_width, 0)  # bound is irrelevant for plain expressions
+    return [_as_bool(_eval(pc.expr, env, ctx)) for pc in function.preconditions]
 
 
 def summarize(
@@ -143,9 +152,13 @@ def _unroll_for(loop: ir.For, env: _Env, ctx: _Ctx) -> _Env:
         after.pop(loop.var, None)  # the loop variable does not escape
         cur = {name: _merge(guard, after[name], cur[name], ctx.w) for name in cur}
 
-    # In-bound assumption: a (bound)-th iteration must not be needed.
-    extra = start + z3.BitVecVal(ctx.bound, ctx.w)
-    ctx.assumptions.append(z3.Not(extra < stop))
+    # In-bound assumption: the loop runs between 0 and `bound` times AND its
+    # index window does not wrap — i.e. stop in [start, start + bound] with no
+    # overflow. The no-wrap part matters: without it, a loop bound expression
+    # that overflows in fixed width (e.g. range(n + 1) at n = INT_MAX, which
+    # wraps to an empty range) would be falsely treated as in-bounds.
+    end = start + z3.BitVecVal(ctx.bound, ctx.w)
+    ctx.assumptions.append(z3.And(start <= end, start <= stop, stop <= end))
     return cur
 
 
