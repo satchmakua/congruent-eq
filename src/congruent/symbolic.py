@@ -126,7 +126,9 @@ def summarize(
     ctx.ret_kind = _ret_kind(function.return_type)
     retval0 = _empty_retval(ctx.ret_kind, int_width)
 
-    _env, returned, retval = _exec_seq(function.body, env, ctx, _TRUE, z3.BoolVal(False), retval0)
+    _env, returned, retval, _b, _c = _exec_seq(
+        function.body, env, ctx, _TRUE, z3.BoolVal(False), retval0, z3.BoolVal(False), z3.BoolVal(False)
+    )
 
     # Falling off the end without returning is itself a runtime error (Python
     # would return None), so it's folded into the error condition.
@@ -135,22 +137,26 @@ def summarize(
 
 
 # --- statement execution (single state-threading pass) ----------------------
-# Threads (env, returned, retval) through a statement sequence. `returned` is the
-# condition under which the function has already returned; statements execute
-# only where they are "live" = pc ∧ ¬returned, so a `return` anywhere (including
-# inside a loop) correctly short-circuits the rest.
+# Threads (env, returned, retval, broken, continued). A statement executes only
+# where it is "live" = pc ∧ ¬returned ∧ ¬broken ∧ ¬continued. `returned` is
+# function-level; `broken`/`continued` refer to the nearest enclosing loop, which
+# resets `continued` each iteration and consumes `broken` to stop iterating.
 
-def _exec_seq(
-    stmts, env: _Env, ctx: _Ctx, pc: z3.BoolRef, returned: z3.BoolRef, retval: z3.ExprRef
-):
+def _exec_seq(stmts, env: _Env, ctx: _Ctx, pc, returned, retval, broken, continued):
     cur = dict(env)
     for stmt in stmts:
-        live = z3.And(pc, z3.Not(returned))
+        live = z3.And(pc, z3.Not(returned), z3.Not(broken), z3.Not(continued))
 
         if isinstance(stmt, ir.Return):
             val = _coerce_return(_eval(stmt.value, cur, ctx, live), ctx)
             retval = _merge(live, val, retval, ctx.w)
             returned = z3.Or(returned, live)
+
+        elif isinstance(stmt, ir.Break):
+            broken = z3.Or(broken, live)
+
+        elif isinstance(stmt, ir.Continue):
+            continued = z3.Or(continued, live)
 
         elif isinstance(stmt, ir.Assign):
             val = _eval(stmt.value, cur, ctx, live)
@@ -158,11 +164,11 @@ def _exec_seq(
 
         elif isinstance(stmt, ir.If):
             cond = _as_bool(_eval(stmt.test, cur, ctx, live))
-            then_env, returned, retval = _exec_seq(
-                stmt.body, cur, ctx, z3.And(live, cond), returned, retval
+            then_env, returned, retval, broken, continued = _exec_seq(
+                stmt.body, cur, ctx, z3.And(live, cond), returned, retval, broken, continued
             )
-            else_env, returned, retval = _exec_seq(
-                stmt.orelse, cur, ctx, z3.And(live, z3.Not(cond)), returned, retval
+            else_env, returned, retval, broken, continued = _exec_seq(
+                stmt.orelse, cur, ctx, z3.And(live, z3.Not(cond)), returned, retval, broken, continued
             )
             for name in _assigned_names(stmt.body) | _assigned_names(stmt.orelse):
                 then_v = then_env.get(name, cur.get(name))
@@ -172,6 +178,7 @@ def _exec_seq(
                 cur[name] = _merge(cond, then_v, else_v, ctx.w)
 
         elif isinstance(stmt, ir.For):
+            # A nested loop manages its own break/continue; the outer ones pass through.
             cur, returned, retval = _unroll_for(stmt, cur, ctx, live, returned, retval)
 
         elif isinstance(stmt, ir.ForEach):
@@ -180,34 +187,47 @@ def _exec_seq(
         else:
             raise AssertionError(f"unhandled statement node: {stmt!r}")
 
+    return cur, returned, retval, broken, continued
+
+
+# --- loop unrolling -------------------------------------------------------
+# Each loop owns its `broken` (accumulates across iterations, stopping the loop)
+# and a fresh `continued` per iteration. `return` still propagates out via
+# `returned`. The body runs only where guard ∧ ¬returned ∧ ¬broken holds.
+
+def _run_iterations(loop, cur, ctx, pc, returned, retval, idx_of, guard_of):
+    written = _require_initialized(loop, cur)
+    broken = z3.BoolVal(False)
+    cur = dict(cur)
+    for k in range(ctx.bound):
+        guard = guard_of(k)
+        body_env = dict(cur)
+        body_env[loop.var] = idx_of(k)
+        after, returned, retval, broken, _continued = _exec_seq(
+            loop.body, body_env, ctx, z3.And(pc, guard), returned, retval, broken, z3.BoolVal(False)
+        )
+        for name in written:
+            cur[name] = _merge(guard, after[name], cur[name], ctx.w)
     return cur, returned, retval
 
-
-# --- loop unrolling (threads control state; `return` inside loops is allowed) -
 
 def _unroll_for(loop: ir.For, env: _Env, ctx: _Ctx, pc, returned, retval):
     ctx.unrolled = True
     start = _as_bv(_eval(loop.start, env, ctx, pc), ctx.w)
     stop = _as_bv(_eval(loop.stop, env, ctx, pc), ctx.w)
-    written = _require_initialized(loop, env)
 
-    cur = dict(env)
-    for k in range(ctx.bound):
-        idx = start + z3.BitVecVal(k, ctx.w)
-        guard = idx < stop  # signed: iteration k runs iff start + k < stop
-        body_env = dict(cur)
-        body_env[loop.var] = idx
-        after, returned, retval = _exec_seq(loop.body, body_env, ctx, z3.And(pc, guard), returned, retval)
-        for name in written:
-            cur[name] = _merge(guard, after[name], cur[name], ctx.w)
+    cur, returned, retval = _run_iterations(
+        loop, env, ctx, pc, returned, retval,
+        idx_of=lambda k: start + z3.BitVecVal(k, ctx.w),
+        guard_of=lambda k: (start + z3.BitVecVal(k, ctx.w)) < stop,  # signed: start+k < stop
+    )
 
     # In-bound assumption (guarded by pc): the loop runs 0..bound times and its
     # index window does not wrap, i.e. stop in [start, start + bound] with no
     # overflow. The no-wrap part keeps "up to bound N" honest even when the loop
     # bound expression could overflow in fixed width.
     end = start + z3.BitVecVal(ctx.bound, ctx.w)
-    in_bound = z3.And(start <= end, start <= stop, stop <= end)
-    ctx.assumptions.append(z3.Implies(pc, in_bound))
+    ctx.assumptions.append(z3.Implies(pc, z3.And(start <= end, start <= stop, stop <= end)))
     return cur, returned, retval
 
 
@@ -216,19 +236,14 @@ def _unroll_foreach(loop: ir.ForEach, env: _Env, ctx: _Ctx, pc, returned, retval
     seq = _eval(loop.iterable, env, ctx, pc)
     if not isinstance(seq, SymList):
         raise UnsupportedForProof("can only iterate a list[int]")
-    written = _require_initialized(loop, env)
 
     # No extra in-bound assumption: list length is bounded to [0, bound] by
     # make_inputs, so `bound` unrollings cover every valid list.
-    cur = dict(env)
-    for k in range(ctx.bound):
-        guard = z3.BitVecVal(k, ctx.w) < seq.length  # iteration k runs iff k < len
-        body_env = dict(cur)
-        body_env[loop.var] = z3.Select(seq.arr, z3.BitVecVal(k, ctx.w))
-        after, returned, retval = _exec_seq(loop.body, body_env, ctx, z3.And(pc, guard), returned, retval)
-        for name in written:
-            cur[name] = _merge(guard, after[name], cur[name], ctx.w)
-    return cur, returned, retval
+    return _run_iterations(
+        loop, env, ctx, pc, returned, retval,
+        idx_of=lambda k: z3.Select(seq.arr, z3.BitVecVal(k, ctx.w)),
+        guard_of=lambda k: z3.ULT(z3.BitVecVal(k, ctx.w), seq.length),  # k < len
+    )
 
 
 def _require_initialized(loop, env: _Env) -> set[str]:

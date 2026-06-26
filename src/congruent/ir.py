@@ -14,14 +14,14 @@ Supported subset (v1):
     - comparisons: < <= > >= == !=   (including chained: a < b < c)
     - boolean logic: and / or / not
     - integer and boolean literals
-    - `for <var> in range(...)` bounded loops, with `return` allowed inside
+    - `for <var> in range(...)` bounded loops, with `return`/`break`/`continue`
     - `list[int]` inputs: `len(xs)`, `xs[i]` (read), `for x in xs` iteration
     - building/returning `list[int]`: list literals `[a, b]` and `+` concatenation
 
 Out of scope (raise `UnsupportedConstruct` loudly — never ignored):
     while, recursion-via-call, floats, strings, I/O, global mutation,
-    list/attribute/subscript *assignment*, comprehensions, exceptions,
-    `break`/`continue`. Refusing to model a construct is what keeps verdicts honest.
+    list/attribute/subscript *assignment*, comprehensions, exceptions.
+    Refusing to model a construct is what keeps verdicts honest.
 """
 
 from __future__ import annotations
@@ -154,7 +154,17 @@ class ForEach:
     body: tuple["Stmt", ...]
 
 
-Stmt = Union[Return, Assign, If, For, ForEach]
+@dataclass(frozen=True)
+class Break:
+    """`break` — exit the nearest enclosing loop."""
+
+
+@dataclass(frozen=True)
+class Continue:
+    """`continue` — skip to the next iteration of the nearest enclosing loop."""
+
+
+Stmt = Union[Return, Assign, If, For, ForEach, Break, Continue]
 
 
 @dataclass(frozen=True)
@@ -232,7 +242,20 @@ def _lower_function(node: ast.FunctionDef) -> Function:
 
     preconditions, rest = _extract_preconditions(_strip_docstring(node.body))
     body = _lower_block(rest)
+    _check_loop_control(body, in_loop=False)
     return Function(node.name, params, return_type, body, preconditions)
+
+
+def _check_loop_control(stmts: tuple[Stmt, ...], in_loop: bool) -> None:
+    """`break`/`continue` are only legal inside a loop."""
+    for stmt in stmts:
+        if isinstance(stmt, (Break, Continue)) and not in_loop:
+            raise UnsupportedConstruct(f"{type(stmt).__name__.lower()} outside a loop")
+        if isinstance(stmt, If):
+            _check_loop_control(stmt.body, in_loop)
+            _check_loop_control(stmt.orelse, in_loop)
+        elif isinstance(stmt, (For, ForEach)):
+            _check_loop_control(stmt.body, in_loop=True)
 
 
 def _is_assume_call(node: ast.stmt) -> bool:
@@ -295,6 +318,12 @@ def _lower_block(stmts: list[ast.stmt]) -> tuple[Stmt, ...]:
 def _lower_stmt(node: ast.stmt) -> Stmt:
     if _is_assume_call(node):
         raise UnsupportedConstruct("assume(...) is only allowed as a leading statement of the function")
+
+    if isinstance(node, ast.Break):
+        return Break()
+
+    if isinstance(node, ast.Continue):
+        return Continue()
 
     if isinstance(node, ast.Return):
         if node.value is None:

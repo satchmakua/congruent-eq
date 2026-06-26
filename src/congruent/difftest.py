@@ -48,6 +48,14 @@ class _OutOfBound(Exception):
     """A loop would run more than `bound` iterations — outside the verdict's scope."""
 
 
+class _Break(Exception):
+    """`break` — unwinds to the enclosing loop."""
+
+
+class _Continue(Exception):
+    """`continue` — unwinds to the next iteration of the enclosing loop."""
+
+
 class _Ctx:
     __slots__ = ("width", "bound")
 
@@ -107,6 +115,10 @@ def _exec_stmt(stmt: ir.Stmt, env: dict[str, object], ctx: _Ctx) -> None:
         branch = stmt.body if _truth(_eval(stmt.test, env, ctx)) else stmt.orelse
         _exec_block(branch, env, ctx)
         return
+    if isinstance(stmt, ir.Break):
+        raise _Break
+    if isinstance(stmt, ir.Continue):
+        raise _Continue
     if isinstance(stmt, ir.For):
         start = int(_eval(stmt.start, env, ctx))  # type: ignore[arg-type]
         stop = int(_eval(stmt.stop, env, ctx))  # type: ignore[arg-type]
@@ -115,9 +127,7 @@ def _exec_stmt(stmt: ir.Stmt, env: dict[str, object], ctx: _Ctx) -> None:
         _, imax = _int_min_max(ctx.width)
         if not (start + ctx.bound <= imax and start <= stop <= start + ctx.bound):
             raise _OutOfBound
-        for i in range(start, stop):
-            env[stmt.var] = _wrap(i, ctx.width)
-            _exec_block(stmt.body, env, ctx)
+        _run_loop((_wrap(i, ctx.width) for i in range(start, stop)), stmt, env, ctx)
         env.pop(stmt.var, None)  # loop variable does not escape the loop
         return
     if isinstance(stmt, ir.ForEach):
@@ -126,12 +136,23 @@ def _exec_stmt(stmt: ir.Stmt, env: dict[str, object], ctx: _Ctx) -> None:
             raise TypeError(f"{stmt.iterable!r} is not iterable")
         if len(seq) > ctx.bound:
             raise _OutOfBound
-        for elem in seq:
-            env[stmt.var] = _wrap(int(elem), ctx.width)
-            _exec_block(stmt.body, env, ctx)
+        _run_loop((_wrap(int(elem), ctx.width) for elem in seq), stmt, env, ctx)
         env.pop(stmt.var, None)
         return
     raise AssertionError(f"unhandled statement node: {stmt!r}")
+
+
+def _run_loop(values, stmt, env: dict[str, object], ctx: _Ctx) -> None:
+    """Run a loop body over `values`, honoring `break`/`continue`. `_Return`
+    propagates out to the function level; `_OutOfBound` propagates to be skipped."""
+    for value in values:
+        env[stmt.var] = value
+        try:
+            _exec_block(stmt.body, env, ctx)
+        except _Continue:
+            continue
+        except _Break:
+            break
 
 
 def _eval(node: ir.Expr, env: dict[str, object], ctx: _Ctx) -> object:
