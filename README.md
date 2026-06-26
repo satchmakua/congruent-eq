@@ -131,9 +131,9 @@ EQUIVALENT  (stage: symbolic, 0.00s)
 > model checking) with early `return`, `assume(...)` preconditions, and bounded
 > `list[int]` inputs with `len`, iteration, and `xs[i]` indexing. Out-of-bounds
 > access and divide-by-zero are modeled as runtime errors (a rewrite that crashes
-> where the original didn't is a counterexample). Benchmarks pass with zero
-> unsound verdicts. Next: counterexample minimization (M5). See
-> [ROADMAP.md](ROADMAP.md).
+> where the original didn't is a counterexample), and counterexamples are
+> minimized to the smallest failing input. Benchmarks pass with zero unsound
+> verdicts. See [ROADMAP.md](ROADMAP.md).
 
 ---
 
@@ -158,6 +158,7 @@ congruent path/to/original.py:func_name path/to/candidate.py:func_name --bound 8
 | `--bound N` | `8` | Loop/recursion unroll depth and array-length bound |
 | `--int-width W` | `32` | Bit width for the fixed-width integer model |
 | `--assume EXPR` | — | Precondition on the inputs, e.g. `--assume 'n >= 0'` (repeatable) |
+| `--no-minimize` | off | Report the first counterexample found, not the smallest |
 
 ## Layout
 

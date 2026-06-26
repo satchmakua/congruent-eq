@@ -51,17 +51,15 @@ floor `//`/`%`; sound `UNKNOWN` fallback for anything not yet modeled.
 - **Remaining:** `break` / `continue` (still rejected by the parser) — they need
   per-loop `broken` / per-iteration `continued` guards threaded like `returned`.
 
-### M5 — Counterexample minimization 🔜
-**Goal:** report the *smallest* failing input, so a counterexample reads as a
-crisp bug, not a random blob.
-- After a SAT result, minimize a cost (list length, then `|int|` of each input)
-  via `z3.Optimize` or iterative re-querying under the difference constraint.
-- Surface via `--minimize` (default on); note it in the verdict.
+### M5 — Counterexample minimization ✅
+- Symbolic-found counterexamples are shrunk with a few cheap incremental solver
+  calls (`z3.Optimize` was tried first but hangs over bitvectors): minimize each
+  list's length, then pull scalar ints to zero, locking in each gain.
+- `--no-minimize` to skip it; minimized verdicts note `counterexample minimized`.
+- difftest's own witnesses already use boundary values (`[]`, `0`, `-1`), so they
+  are minimal by construction and returned as-is.
 
-**Done when:** counterexamples are minimal (shortest list / smallest-magnitude
-ints) on the eval set; a test asserts a known case shrinks to the expected input.
-
-### M6 — List outputs ⬜
+### M6 — List outputs 🔜
 **Goal:** verify functions that *build and return* a `list[int]` (map/filter/transform).
 - A list-construction mechanism (`result = result + [x]` / append) in IR + both
   interpreters; bounded output lists.
