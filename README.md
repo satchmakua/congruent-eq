@@ -123,17 +123,17 @@ EQUIVALENT  (stage: symbolic, 0.00s)
   note: holds within bound: lists up to length 8, loops up to 8 iterations
 ```
 
-> **Status: M0–M4 complete.** The differential stage catches counterexamples
+> **Status: M0–M6 complete.** The differential stage catches counterexamples
 > (overflow included) under a fixed-width integer model; the symbolic stage lowers
 > both functions to Z3 bitvector expressions and returns `EQUIVALENT` (UNSAT), a
 > `COUNTEREXAMPLE` (SAT, decoded to concrete inputs), or `UNKNOWN`. Supported:
 > ints/bools, branches, `for ... in range(...)` and `for x in xs` loops (bounded
 > model checking) with early `return`, `assume(...)` preconditions, and bounded
-> `list[int]` inputs with `len`, iteration, and `xs[i]` indexing. Out-of-bounds
-> access and divide-by-zero are modeled as runtime errors (a rewrite that crashes
-> where the original didn't is a counterexample), and counterexamples are
-> minimized to the smallest failing input. Benchmarks pass with zero unsound
-> verdicts. See [ROADMAP.md](ROADMAP.md).
+> `list[int]` both as inputs (`len`, iteration, `xs[i]`) and as **outputs** (build
+> and return a list via literals + `+`). Out-of-bounds access and divide-by-zero
+> are modeled as runtime errors (a rewrite that crashes where the original didn't
+> is a counterexample), and counterexamples are minimized to the smallest failing
+> input. Benchmarks pass with zero unsound verdicts. See [ROADMAP.md](ROADMAP.md).
 
 ---
 

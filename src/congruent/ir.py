@@ -16,12 +16,12 @@ Supported subset (v1):
     - integer and boolean literals
     - `for <var> in range(...)` bounded loops, with `return` allowed inside
     - `list[int]` inputs: `len(xs)`, `xs[i]` (read), `for x in xs` iteration
+    - building/returning `list[int]`: list literals `[a, b]` and `+` concatenation
 
 Out of scope (raise `UnsupportedConstruct` loudly — never ignored):
     while, recursion-via-call, floats, strings, I/O, global mutation,
-    list/attribute/subscript *assignment*, list *outputs*, comprehensions,
-    exceptions, `break`/`continue`. Refusing to model a construct is what keeps
-    verdicts honest.
+    list/attribute/subscript *assignment*, comprehensions, exceptions,
+    `break`/`continue`. Refusing to model a construct is what keeps verdicts honest.
 """
 
 from __future__ import annotations
@@ -96,7 +96,14 @@ class Subscript:
     index: "Expr"
 
 
-Expr = Union[Name, Const, BinOp, UnaryOp, Compare, BoolOp, IfExp, Len, Subscript]
+@dataclass(frozen=True)
+class ListLit:
+    """A list literal `[e0, e1, ...]` (including the empty list `[]`)."""
+
+    elements: tuple["Expr", ...]
+
+
+Expr = Union[Name, Const, BinOp, UnaryOp, Compare, BoolOp, IfExp, Len, Subscript, ListLit]
 
 
 # --- Statements ------------------------------------------------------------
@@ -394,6 +401,9 @@ def _lower_expr(node: ast.expr) -> Expr:
         if isinstance(node.slice, ast.Slice):
             raise UnsupportedConstruct("slice subscripts are not supported")
         return Subscript(_lower_expr(node.value), _lower_expr(node.slice))
+
+    if isinstance(node, ast.List):
+        return ListLit(tuple(_lower_expr(e) for e in node.elts))
 
     raise UnsupportedConstruct(f"unsupported expression: {type(node).__name__}")
 

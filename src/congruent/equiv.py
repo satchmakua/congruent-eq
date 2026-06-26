@@ -100,6 +100,16 @@ def check(
             stage="parse",
             assumptions=[f"signatures differ: original {orig_types} vs candidate {cand_types}"],
         )
+    if original.return_type != candidate.return_type:
+        return Verdict(
+            status=Status.ERROR,
+            bound=bound,
+            stage="parse",
+            assumptions=[
+                f"return types differ: original -> {original.return_type} "
+                f"vs candidate -> {candidate.return_type}"
+            ],
+        )
 
     def unknown(reason: str) -> Verdict:
         note = "no counterexample found by differential testing; equivalence not proven"

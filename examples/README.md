@@ -24,6 +24,7 @@ congruent examples/midpoint_overflow.py:original examples/midpoint_overflow.py:c
 | [sum_0_to_n.py](sum_0_to_n.py) | accumulating loop → Gauss closed form | **EQUIVALENT** (for `n >= 0`) |
 | [all_positive.py](all_positive.py) | full scan → short-circuit early return | **EQUIVALENT** |
 | [count_positives.py](count_positives.py) | `>` quietly changed to `>=` | **COUNTEREXAMPLE** — lists with a `0` |
+| [keep_positives.py](keep_positives.py) | filter rewrite keeps zeros (`>=` vs `>`) | **COUNTEREXAMPLE** — list in, list out |
 
 Each module declares `TITLE`, `STORY`, `EXPECTED`, and an `original` / `candidate`
 pair; `tests/test_examples.py` pins every verdict so the gallery can't rot.

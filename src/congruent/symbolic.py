@@ -70,7 +70,7 @@ class Summary:
 
 
 class _Ctx:
-    __slots__ = ("w", "bound", "assumptions", "unrolled", "error_terms", "ret_is_bool")
+    __slots__ = ("w", "bound", "assumptions", "unrolled", "error_terms", "ret_kind")
 
     def __init__(self, width: int, bound: int) -> None:
         self.w = width
@@ -78,7 +78,7 @@ class _Ctx:
         self.assumptions: list[z3.BoolRef] = []
         self.error_terms: list[z3.BoolRef] = []
         self.unrolled = False
-        self.ret_is_bool = False
+        self.ret_kind = "int"  # "int" | "bool" | "list"
 
 
 def make_inputs(
@@ -123,8 +123,8 @@ def summarize(
     """Lower `function` to a `Summary` over the (positionally bound) inputs."""
     env: _Env = {p.name: sym for p, sym in zip(function.params, input_symbols)}
     ctx = _Ctx(int_width, bound)
-    ctx.ret_is_bool = function.return_type == "bool"
-    retval0 = z3.BoolVal(False) if ctx.ret_is_bool else z3.BitVecVal(0, int_width)
+    ctx.ret_kind = _ret_kind(function.return_type)
+    retval0 = _empty_retval(ctx.ret_kind, int_width)
 
     _env, returned, retval = _exec_seq(function.body, env, ctx, _TRUE, z3.BoolVal(False), retval0)
 
@@ -148,9 +148,8 @@ def _exec_seq(
         live = z3.And(pc, z3.Not(returned))
 
         if isinstance(stmt, ir.Return):
-            raw = _eval(stmt.value, cur, ctx, live)
-            val = _as_bool(raw) if ctx.ret_is_bool else _as_bv(raw, ctx.w)
-            retval = z3.If(live, val, retval)
+            val = _coerce_return(_eval(stmt.value, cur, ctx, live), ctx)
+            retval = _merge(live, val, retval, ctx.w)
             returned = z3.Or(returned, live)
 
         elif isinstance(stmt, ir.Assign):
@@ -317,12 +316,31 @@ def _eval(node: ir.Expr, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> z3.ExprRef:
         ctx.error_terms.append(z3.And(pc, z3.Not(in_bounds)))
         return z3.Select(seq.arr, index)
 
+    if isinstance(node, ir.ListLit):
+        return _build_list([_eval(e, env, ctx, pc) for e in node.elements], ctx.w)
+
     raise AssertionError(f"unhandled expression node: {node!r}")
 
 
 def _eval_binop(node: ir.BinOp, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> z3.ExprRef:
-    left = _as_bv(_eval(node.left, env, ctx, pc), ctx.w)
-    right = _as_bv(_eval(node.right, env, ctx, pc), ctx.w)
+    left = _eval(node.left, env, ctx, pc)
+    if isinstance(left, SymList):
+        if node.op != "+":
+            raise UnsupportedForProof("unsupported list operation")
+        # Fast path: `xs + [a, b, ...]` is an append — a couple of Stores at the
+        # tail, far cheaper than the general capacity reconstruction.
+        if isinstance(node.right, ir.ListLit):
+            return _append(left, [_eval(e, env, ctx, pc) for e in node.right.elements], ctx)
+        right = _eval(node.right, env, ctx, pc)
+        if not isinstance(right, SymList):
+            raise UnsupportedForProof("unsupported list operation")
+        return _concat(left, right, ctx)
+
+    right = _eval(node.right, env, ctx, pc)
+    if isinstance(right, SymList):
+        raise UnsupportedForProof("unsupported list operation")
+    left = _as_bv(left, ctx.w)
+    right = _as_bv(right, ctx.w)
     op = node.op
     if op == "+":
         return left + right
@@ -389,7 +407,75 @@ def _as_bv(e: z3.ExprRef, w: int) -> z3.ExprRef:
     return z3.If(e, z3.BitVecVal(1, w), z3.BitVecVal(0, w))
 
 
-def _merge(cond: z3.ExprRef, then_val: z3.ExprRef, else_val: z3.ExprRef, w: int) -> z3.ExprRef:
+def _merge(cond: z3.ExprRef, then_val, else_val, w: int):
+    if isinstance(then_val, SymList) or isinstance(else_val, SymList):
+        return SymList(
+            z3.If(cond, then_val.arr, else_val.arr),
+            z3.If(cond, then_val.length, else_val.length),
+        )
     if z3.is_bool(then_val) and z3.is_bool(else_val):
         return z3.If(cond, then_val, else_val)
     return z3.If(cond, _as_bv(then_val, w), _as_bv(else_val, w))
+
+
+# --- list[int] values ------------------------------------------------------
+
+def _empty_list(width: int) -> SymList:
+    arr = z3.K(z3.BitVecSort(width), z3.BitVecVal(0, width))  # all-zero array
+    return SymList(arr, z3.BitVecVal(0, width))
+
+
+def _build_list(elements, width: int) -> SymList:
+    result = _empty_list(width)
+    arr = result.arr
+    for i, element in enumerate(elements):
+        arr = z3.Store(arr, z3.BitVecVal(i, width), _as_bv(element, width))
+    return SymList(arr, z3.BitVecVal(len(elements), width))
+
+
+def _append(a: SymList, elements, ctx: _Ctx) -> SymList:
+    """`a + [e0, e1, ...]` — store each element at the running tail (cheap)."""
+    arr, length = a.arr, a.length
+    for element in elements:
+        arr = z3.Store(arr, length, _as_bv(element, ctx.w))
+        length = length + z3.BitVecVal(1, ctx.w)
+    return SymList(arr, length)
+
+
+def _concat(a: SymList, b: SymList, ctx: _Ctx) -> SymList:
+    """General list+list concatenation. Builds slots 0..bound-1; results longer
+    than `bound` are ruled out of scope by the output-length bound in the query."""
+    arr = z3.K(z3.BitVecSort(ctx.w), z3.BitVecVal(0, ctx.w))
+    for k in range(ctx.bound):
+        kk = z3.BitVecVal(k, ctx.w)
+        value = z3.If(z3.ULT(kk, a.length), z3.Select(a.arr, kk), z3.Select(b.arr, kk - a.length))
+        arr = z3.Store(arr, kk, value)
+    return SymList(arr, a.length + b.length)
+
+
+# --- return-value kinds ----------------------------------------------------
+
+def _ret_kind(return_type: str) -> str:
+    if return_type == "bool":
+        return "bool"
+    if return_type == "list[int]":
+        return "list"
+    return "int"
+
+
+def _empty_retval(ret_kind: str, width: int):
+    if ret_kind == "bool":
+        return z3.BoolVal(False)
+    if ret_kind == "list":
+        return _empty_list(width)
+    return z3.BitVecVal(0, width)
+
+
+def _coerce_return(raw, ctx: _Ctx):
+    if ctx.ret_kind == "bool":
+        return _as_bool(raw)
+    if ctx.ret_kind == "list":
+        if not isinstance(raw, SymList):
+            raise UnsupportedForProof("function annotated -> list[int] did not return a list")
+        return raw
+    return _as_bv(raw, ctx.w)

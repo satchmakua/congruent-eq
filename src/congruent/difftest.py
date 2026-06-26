@@ -146,6 +146,10 @@ def _eval(node: ir.Expr, env: dict[str, object], ctx: _Ctx) -> object:
     if isinstance(node, ir.BinOp):
         left = _eval(node.left, env, ctx)
         right = _eval(node.right, env, ctx)
+        if isinstance(left, list) or isinstance(right, list):
+            if node.op == "+" and isinstance(left, list) and isinstance(right, list):
+                return left + right  # list concatenation
+            raise TypeError("unsupported operand types for list operation")
         return _wrap(_apply_binop(node.op, int(left), int(right)), ctx.width)
 
     if isinstance(node, ir.UnaryOp):
@@ -175,6 +179,9 @@ def _eval(node: ir.Expr, env: dict[str, object], ctx: _Ctx) -> object:
         if not 0 <= index < len(seq):  # type: ignore[arg-type]
             raise IndexError(index)  # out-of-range (incl. negative) is a divergence
         return _wrap(int(seq[index]), ctx.width)  # type: ignore[index]
+
+    if isinstance(node, ir.ListLit):
+        return [_wrap(int(_eval(e, env, ctx)), ctx.width) for e in node.elements]
 
     raise AssertionError(f"unhandled expression node: {node!r}")
 

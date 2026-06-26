@@ -104,13 +104,20 @@ def _equivalence_query(original, candidate, int_width, bound):
     constraints += symbolic.lower_preconditions(candidate, inputs, int_width)
     constraints += summary_o.assumptions + summary_c.assumptions
 
+    # Bound built output lists to length `bound` too (inputs producing longer
+    # outputs are out of scope), so the element-wise comparison below is complete.
+    cap = z3.BitVecVal(bound, int_width)
+    for summary in (summary_o, summary_c):
+        if isinstance(summary.output, symbolic.SymList):
+            constraints.append(z3.ULE(summary.output.length, cap))
+
     # Functions differ if their runtime-error behavior differs, or if both
     # complete normally but produce different outputs.
     both_ok = z3.And(z3.Not(summary_o.error), z3.Not(summary_c.error))
     constraints.append(
         z3.Or(
             summary_o.error != summary_c.error,
-            z3.And(both_ok, _differ(summary_o.output, summary_c.output, int_width)),
+            z3.And(both_ok, _differ(summary_o.output, summary_c.output, int_width, bound)),
         )
     )
     return inputs, constraints, summary_o, summary_c
@@ -160,7 +167,8 @@ def _minimize(constraints, inputs, int_width) -> z3.ModelRef | None:
 
 def _scope_note(original, candidate, summary_o, summary_c, int_width, bound) -> str:
     bounded_bits = []
-    if any(p.type_name == "list[int]" for p in original.params):
+    list_io = any(p.type_name == "list[int]" for p in original.params) or original.return_type == "list[int]"
+    if list_io:
         bounded_bits.append(f"lists up to length {bound}")
     if summary_o.unrolled or summary_c.unrolled:
         bounded_bits.append(f"loops up to {bound} iterations")
@@ -171,8 +179,21 @@ def _scope_note(original, candidate, summary_o, summary_c, int_width, bound) -> 
     return f"complete: agree on all {int_width}-bit inputs (no loops to bound)"
 
 
-def _differ(a: z3.ExprRef, b: z3.ExprRef, int_width: int) -> z3.ExprRef:
+def _differ(a, b, int_width: int, bound: int) -> z3.ExprRef:
     """Assertion that the two outputs disagree, coercing to a common sort."""
+    if isinstance(a, symbolic.SymList) and isinstance(b, symbolic.SymList):
+        # Differ if lengths differ, or some in-range element differs.
+        element_differs = z3.Or(
+            [
+                z3.And(
+                    z3.ULT(z3.BitVecVal(k, int_width), a.length),
+                    z3.Select(a.arr, z3.BitVecVal(k, int_width))
+                    != z3.Select(b.arr, z3.BitVecVal(k, int_width)),
+                )
+                for k in range(bound)
+            ]
+        )
+        return z3.Or(a.length != b.length, element_differs)
     if z3.is_bool(a) and z3.is_bool(b):
         return a != b
     return symbolic._as_bv(a, int_width) != symbolic._as_bv(b, int_width)
@@ -201,16 +222,24 @@ def _decode_model(
             concrete[param.name] = _to_py(model.eval(value, model_completion=True))
     return Counterexample(
         inputs=concrete,
-        original_output=_decode_output(model, summary_original),
-        candidate_output=_decode_output(model, summary_candidate),
+        original_output=_decode_output(model, summary_original, int_width, bound),
+        candidate_output=_decode_output(model, summary_candidate, int_width, bound),
     )
 
 
-def _decode_output(model: z3.ModelRef, summary: "symbolic.Summary") -> object:
-    """A function's observable result in the model: a value, or a raised error."""
+def _decode_output(model: z3.ModelRef, summary: "symbolic.Summary", int_width: int, bound: int) -> object:
+    """A function's observable result in the model: a value, a list, or a raised error."""
     if z3.is_true(model.eval(summary.error, model_completion=True)):
         return "<raises>"
-    return _to_py(model.eval(summary.output, model_completion=True))
+    out = summary.output
+    if isinstance(out, symbolic.SymList):
+        length = int(_to_py(model.eval(out.length, model_completion=True)))
+        length = max(0, min(length, bound))
+        return [
+            _to_py(model.eval(z3.Select(out.arr, z3.BitVecVal(k, int_width)), model_completion=True))
+            for k in range(length)
+        ]
+    return _to_py(model.eval(out, model_completion=True))
 
 
 def _to_py(value: z3.ExprRef) -> object:

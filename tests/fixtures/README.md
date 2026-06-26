@@ -47,6 +47,9 @@ needs an `n >= 0` precondition the tool can't yet express — hence it's not her
 - `array_sum_reorder.py` — `EQUIVALENT`: `total + x` vs. `x + total` over a list.
 - `array_first.py` — `EQUIVALENT`: guarded `xs[0]` two ways (indexing in proofs).
 - `array_count_off_by_one.py` — `COUNTEREXAMPLE`: `>` vs `>=` counting over a list.
+- `contains.py` — `EQUIVALENT`: early-return search vs. found-flag (`return` in a loop).
+- `map_double.py` — `EQUIVALENT`: build a list, `x*2` vs `x+x` (list output).
+- `list_filter_bug.py` — `COUNTEREXAMPLE`: filter with a `>`/`>=` bug (list output).
 
 A fixture may declare an input precondition with a leading `assume(<expr>)`
 (see `sum_to_n.py`); the pair only needs to be equivalent where the precondition

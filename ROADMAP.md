@@ -59,18 +59,19 @@ floor `//`/`%`; sound `UNKNOWN` fallback for anything not yet modeled.
 - difftest's own witnesses already use boundary values (`[]`, `0`, `-1`), so they
   are minimal by construction and returned as-is.
 
-### M6 — List outputs 🔜
-**Goal:** verify functions that *build and return* a `list[int]` (map/filter/transform).
-- A list-construction mechanism (`result = result + [x]` / append) in IR + both
-  interpreters; bounded output lists.
+### M6 — List outputs ✅
+- List literals `[a, b]` and `+` concatenation in the IR + both interpreters;
+  built lists modeled as Z3 array + length, with a fast append path (`r + [x]`)
+  and a general `concat`. Output lists bounded to length `bound` (longer outputs
+  are out of scope), and a return-type-mismatch check guards the comparison.
 - Output equivalence = equal length ∧ element-wise equal within bound.
+- map (`x*2` vs `x+x`) and filter rewrites prove EQUIVALENT; off-by-one map /
+  `>`-vs-`>=` filter / non-commutative concat yield counterexamples.
 
-**Done when:** a map/filter refactor (e.g. doubling, or dropping non-positives)
-proves EQUIVALENT and a subtly-broken one yields a counterexample.
-
-### M7 — Reach & robustness ⬜
+### M7 — Reach & robustness 🔜
 - Pluggable CVC5 backend behind the `solver` abstraction (cross-check verdicts).
 - Bounded strings (as bounded `list[int]` of code points, or a dedicated sort).
+- `break` / `continue` inside loops (deferred from M4).
 - *(Stretch)* C-subset front end; auto-check LLM-suggested refactors.
 
 ---
