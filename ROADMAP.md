@@ -24,15 +24,16 @@ Integer/bool arithmetic + branches lowered to Z3; `UNSAT`/`SAT` → verdict; dec
 - [x] Fixed-width (bitvector) integer model — Python-faithful floor `//`/`%`
 - [x] `equiv` escalation: difftest → symbolic, with sound fallback to UNKNOWN
 
-Known M1 limitations (not false proofs — they fall back to UNKNOWN): division/modulo by a non-constant or zero divisor isn't modeled; list params aren't symbolic yet.
+(M2 later modeled divide-by-zero and out-of-bounds access as guarded runtime errors, removing the earlier UNKNOWN fallbacks for those.)
 
 ### M2 — Bounded loops + arrays *(in progress)*
 - [x] `for ... in range(...)` loops: unroll to depth `bound`, report the bound
 - [x] Bounded model checking: in-bound assumption (loop trip count ≤ bound), so loop verdicts read "EQUIVALENT up to bound N"
 - [x] Concrete interpreter caps loops at `bound` (difftest stays in the same domain)
 - [x] Input preconditions: leading `assume(<expr>)` statements + CLI `--assume`, honored by both stages
-- [x] `list[int]` inputs: bounded-length symbolic arrays, `len(xs)`, `for x in xs` iteration (proven); `xs[i]` reads run in difftest
-- [ ] `xs[i]` indexing in *proofs* (needs per-access in-bounds guards under path conditions)
+- [x] `list[int]` inputs: bounded-length symbolic arrays, `len(xs)`, `for x in xs` iteration
+- [x] `xs[i]` indexing in *proofs* — out-of-bounds modeled as a guarded runtime error (path-condition aware)
+- [x] Division/modulo by a non-constant divisor — divide-by-zero modeled as a guarded runtime error
 - [ ] `return` / `break` / `continue` inside loops
 - [ ] List *outputs* (functions that build/return a list)
 - [ ] Optionally bounded strings

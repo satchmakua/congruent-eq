@@ -45,14 +45,21 @@ def test_floor_division_semantics_match_python() -> None:
     assert _check(a, b).status is Status.COUNTEREXAMPLE
 
 
-def test_nonconstant_divisor_falls_back_to_unknown() -> None:
-    # Division by a variable is not modeled; equivalent-looking pair must not be
-    # claimed EQUIVALENT — it falls back to UNKNOWN (sound, not a false proof).
+def test_nonconstant_divisor_is_modeled() -> None:
+    # Division by a variable is modeled (divide-by-zero handled as a matching
+    # runtime error), so an equivalent pair is proven, not punted to UNKNOWN.
     a = "def f(x: int, y: int) -> int:\n    return (x + x) // y"
     b = "def g(x: int, y: int) -> int:\n    return (x * 2) // y"
     verdict = _check(a, b)
-    assert verdict.status is Status.UNKNOWN
-    assert verdict.stage == "difftest"
+    assert verdict.status is Status.EQUIVALENT
+    assert verdict.stage == "symbolic"
+
+
+def test_divide_by_zero_divergence_is_a_counterexample() -> None:
+    # original raises at y == 0; candidate guards it -> the two differ there.
+    a = "def f(x: int, y: int) -> int:\n    return x // y"
+    b = "def g(x: int, y: int) -> int:\n    return x // y if y != 0 else 0"
+    assert _check(a, b).status is Status.COUNTEREXAMPLE
 
 
 def test_width_sensitive_equivalence() -> None:

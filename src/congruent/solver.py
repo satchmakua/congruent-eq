@@ -54,7 +54,16 @@ def prove_equivalence(
     # ...and keep every loop within the bound.
     for assumption in summary_o.assumptions + summary_c.assumptions:
         solver.add(assumption)
-    solver.add(_differ(summary_o.output, summary_c.output, int_width))
+
+    # Functions differ if their runtime-error behavior differs, or if both
+    # complete normally but produce different outputs.
+    both_ok = z3.And(z3.Not(summary_o.error), z3.Not(summary_c.error))
+    solver.add(
+        z3.Or(
+            summary_o.error != summary_c.error,
+            z3.And(both_ok, _differ(summary_o.output, summary_c.output, int_width)),
+        )
+    )
 
     start = time.perf_counter()
     result = solver.check()
@@ -87,9 +96,7 @@ def prove_equivalence(
 
     if result == z3.sat:
         model = solver.model()
-        cx = _decode_model(
-            model, inputs, original.params, summary_o.output, summary_c.output, int_width, bound
-        )
+        cx = _decode_model(model, inputs, original.params, summary_o, summary_c, int_width, bound)
         return Verdict(
             status=Status.COUNTEREXAMPLE,
             bound=bound,
@@ -119,8 +126,8 @@ def _decode_model(
     model: z3.ModelRef,
     inputs: list,
     params: list,
-    out_original: z3.ExprRef,
-    out_candidate: z3.ExprRef,
+    summary_original: "symbolic.Summary",
+    summary_candidate: "symbolic.Summary",
     int_width: int,
     bound: int,
 ) -> Counterexample:
@@ -138,9 +145,16 @@ def _decode_model(
             concrete[param.name] = _to_py(model.eval(value, model_completion=True))
     return Counterexample(
         inputs=concrete,
-        original_output=_to_py(model.eval(out_original, model_completion=True)),
-        candidate_output=_to_py(model.eval(out_candidate, model_completion=True)),
+        original_output=_decode_output(model, summary_original),
+        candidate_output=_decode_output(model, summary_candidate),
     )
+
+
+def _decode_output(model: z3.ModelRef, summary: "symbolic.Summary") -> object:
+    """A function's observable result in the model: a value, or a raised error."""
+    if z3.is_true(model.eval(summary.error, model_completion=True)):
+        return "<raises>"
+    return _to_py(model.eval(summary.output, model_completion=True))
 
 
 def _to_py(value: z3.ExprRef) -> object:

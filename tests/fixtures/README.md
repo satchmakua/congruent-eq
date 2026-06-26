@@ -21,8 +21,9 @@ arithmetic, comparisons, boolean logic; `if/else`; conditional expressions;
 `len(xs)` and `xs[i]` reads). See `../../ROADMAP.md`.
 
 `list[int]` inputs are bounded to length `--bound`, so an array verdict reads
-"holds for lists up to length N". (Indexing `xs[i]` is exercised by the
-differential stage but not yet by proofs — see the roadmap.)
+"holds for lists up to length N". Out-of-bounds `xs[i]` and divide-by-zero are
+modeled as matching runtime errors, so indexed functions are proven soundly
+(a rewrite that crashes where the original didn't is a counterexample).
 
 Every pair must be correct under the tool's semantics: integers are modeled as
 fixed-width two's-complement, and scalar `int` inputs range over the **whole**
@@ -44,6 +45,7 @@ needs an `n >= 0` precondition the tool can't yet express — hence it's not her
 - `sum_to_n.py` — `EQUIVALENT` under `assume(n >= 0)`: closed form vs. loop.
 - `array_len_count.py` — `EQUIVALENT`: `len(xs)` vs. manual count.
 - `array_sum_reorder.py` — `EQUIVALENT`: `total + x` vs. `x + total` over a list.
+- `array_first.py` — `EQUIVALENT`: guarded `xs[0]` two ways (indexing in proofs).
 - `array_count_off_by_one.py` — `COUNTEREXAMPLE`: `>` vs `>=` counting over a list.
 
 A fixture may declare an input precondition with a leading `assume(<expr>)`

@@ -1,26 +1,34 @@
 """Symbolic interpreter — Stage 2 core: IR -> Z3 expressions.
 
 This is path (A) from the foundational doc §3: a from-scratch mini symbolic
-interpreter. It lowers a function to a single Z3 expression over fresh symbolic
-inputs. Branches and early `return`s are handled by continuation-passing path
-merging; bounded `for` loops are unrolled to `--bound` iterations.
+interpreter. It lowers a function to a Z3 *summary* over fresh symbolic inputs.
+Branches and early `return`s are handled by continuation-passing path merging;
+bounded `for` loops are unrolled to `--bound` iterations.
 
-**Semantics must mirror `difftest`'s concrete interpreter exactly**, or M0/M1
-and M2 could disagree:
+**Semantics must mirror `difftest`'s concrete interpreter exactly**, or the two
+stages could disagree:
     - integers are `int_width`-bit bitvectors (arithmetic wraps mod 2**width),
     - `//` and `%` are Python floor division / modulo (not C truncation),
     - signed comparisons.
 
-**Bounded model checking.** A loop is unrolled `bound` times; iteration k only
-takes effect under the guard `start + k < stop`. We also record an *in-bound
-assumption* — that the loop runs 0..`bound` times and its index window does not
-wrap — so the equivalence query is only asked where every loop stays within the
-bound. That is what makes a loop verdict an honest "EQUIVALENT up to bound N".
+**Runtime errors are modeled, not assumed away.** A function's summary is a
+pair `(output, error)`: `error` is the disjunction of every *guarded* runtime
+error — an out-of-bounds `xs[i]` or a division/modulo by zero — where each is
+guarded by the path condition under which it actually executes. Two functions
+are equivalent iff their error conditions match *and* their outputs agree
+whenever neither errors. This catches a rewrite that crashes where the original
+didn't, with no unsound "assume in-bounds" caveat.
 
-Anything not soundly modeled (loop bodies that `return`, division by a
-non-constant/zero divisor, list params, variables first assigned inside a loop)
-raises `UnsupportedForProof`; the orchestrator then falls back to the
-differential verdict rather than risk a false `EQUIVALENT`.
+**Bounded model checking.** A `for range` loop is unrolled `bound` times;
+iteration k takes effect under `start + k < stop`. We record an *in-bound
+assumption* (the loop runs 0..`bound` times with no index-window wrap), guarded
+by the loop's path condition — that is what makes a loop verdict an honest
+"EQUIVALENT up to bound N". `list[int]` inputs are length-bounded to `bound`, so
+iterating one is always within the unroll bound.
+
+Anything not soundly modeled (loop bodies that `return`, list params of other
+types, variables first assigned inside a loop) raises `UnsupportedForProof`; the
+orchestrator then falls back to the differential verdict.
 """
 
 from __future__ import annotations
@@ -32,7 +40,8 @@ import z3
 from congruent import ir
 from congruent.ir import Function
 
-_Env = dict[str, z3.ExprRef]
+_Env = dict  # name -> (z3.ExprRef | SymList)
+_TRUE = z3.BoolVal(True)
 
 
 class UnsupportedForProof(Exception):
@@ -47,26 +56,24 @@ class SymList:
     length: z3.ExprRef  # BitVec; constrained 0 <= length <= bound at the query
 
 
-# An environment value is a scalar Z3 expr or a symbolic list.
-_Val = "z3.ExprRef | SymList"
-
-
 @dataclass
 class Summary:
     """The symbolic result of one function."""
 
     output: z3.ExprRef
+    error: z3.BoolRef              # condition under which the function raises at runtime
     assumptions: list[z3.BoolRef]  # in-bound conditions accumulated from loops
     unrolled: bool                 # whether any loop was unrolled (verdict is bounded)
 
 
 class _Ctx:
-    __slots__ = ("w", "bound", "assumptions", "unrolled")
+    __slots__ = ("w", "bound", "assumptions", "unrolled", "error_terms")
 
     def __init__(self, width: int, bound: int) -> None:
         self.w = width
         self.bound = bound
         self.assumptions: list[z3.BoolRef] = []
+        self.error_terms: list[z3.BoolRef] = []
         self.unrolled = False
 
 
@@ -98,77 +105,72 @@ def make_inputs(
 
 
 def lower_preconditions(
-    function: Function, input_symbols: list[z3.ExprRef], int_width: int
+    function: Function, input_symbols: list, int_width: int
 ) -> list[z3.BoolRef]:
     """Lower a function's `assume(...)` preconditions to Z3 boolean constraints."""
     env: _Env = {p.name: sym for p, sym in zip(function.params, input_symbols)}
-    ctx = _Ctx(int_width, 0)  # bound is irrelevant for plain expressions
-    return [_as_bool(_eval(pc.expr, env, ctx)) for pc in function.preconditions]
+    ctx = _Ctx(int_width, 0)  # bound irrelevant; error_terms here are discarded
+    return [_as_bool(_eval(pc.expr, env, ctx, _TRUE)) for pc in function.preconditions]
 
 
 def summarize(
-    function: Function, input_symbols: list[z3.ExprRef], int_width: int, bound: int
+    function: Function, input_symbols: list, int_width: int, bound: int
 ) -> Summary:
     """Lower `function` to a `Summary` over the (positionally bound) inputs."""
     env: _Env = {p.name: sym for p, sym in zip(function.params, input_symbols)}
     ctx = _Ctx(int_width, bound)
 
-    def fell_off_end(_: _Env) -> z3.ExprRef:
+    def fell_off_end(_env: _Env, _pc: z3.BoolRef) -> z3.ExprRef:
         raise UnsupportedForProof(f"{function.name}: a path may fall off the end without returning")
 
-    output = _exec_stmts(function.body, env, ctx, fell_off_end)
-    return Summary(output, ctx.assumptions, ctx.unrolled)
+    output = _exec_stmts(function.body, env, ctx, fell_off_end, _TRUE)
+    error = z3.Or(ctx.error_terms) if ctx.error_terms else z3.BoolVal(False)
+    return Summary(output, error, ctx.assumptions, ctx.unrolled)
 
 
 # --- statement execution (continuation-passing; `return` allowed here) ------
+# Continuations have signature k(env, pc) -> ExprRef and compute the return
+# value of "the rest of the function" reached under path condition `pc`.
 
-def _exec_stmts(stmts, env: _Env, ctx: _Ctx, k) -> z3.ExprRef:  # k: _Env -> ExprRef
+def _exec_stmts(stmts, env: _Env, ctx: _Ctx, k, pc: z3.BoolRef) -> z3.ExprRef:
     if not stmts:
-        return k(env)
+        return k(env, pc)
     head, rest = stmts[0], stmts[1:]
 
     if isinstance(head, ir.Return):
-        return _eval(head.value, env, ctx)
+        return _eval(head.value, env, ctx, pc)
 
     if isinstance(head, ir.Assign):
         new_env = dict(env)
-        new_env[head.target] = _eval(head.value, env, ctx)
-        return _exec_stmts(rest, new_env, ctx, k)
+        new_env[head.target] = _eval(head.value, env, ctx, pc)
+        return _exec_stmts(rest, new_env, ctx, k, pc)
 
     if isinstance(head, ir.If):
-        cond = _as_bool(_eval(head.test, env, ctx))
+        cond = _as_bool(_eval(head.test, env, ctx, pc))
 
-        def k_rest(env_after: _Env) -> z3.ExprRef:
-            return _exec_stmts(rest, env_after, ctx, k)
+        def k_rest(env_after: _Env, pc_after: z3.BoolRef) -> z3.ExprRef:
+            return _exec_stmts(rest, env_after, ctx, k, pc_after)
 
-        then_val = _exec_stmts(head.body, env, ctx, k_rest)
-        else_val = _exec_stmts(head.orelse, env, ctx, k_rest)
+        then_val = _exec_stmts(head.body, env, ctx, k_rest, z3.And(pc, cond))
+        else_val = _exec_stmts(head.orelse, env, ctx, k_rest, z3.And(pc, z3.Not(cond)))
         return _merge(cond, then_val, else_val, ctx.w)
 
     if isinstance(head, ir.For):
-        return _exec_stmts(rest, _unroll_for(head, env, ctx), ctx, k)
+        return _exec_stmts(rest, _unroll_for(head, env, ctx, pc), ctx, k, pc)
 
     if isinstance(head, ir.ForEach):
-        return _exec_stmts(rest, _unroll_foreach(head, env, ctx), ctx, k)
+        return _exec_stmts(rest, _unroll_foreach(head, env, ctx, pc), ctx, k, pc)
 
     raise AssertionError(f"unhandled statement node: {head!r}")
 
 
 # --- loop unrolling (env transformer; `return` inside the loop is rejected) --
 
-def _unroll_for(loop: ir.For, env: _Env, ctx: _Ctx) -> _Env:
+def _unroll_for(loop: ir.For, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> _Env:
     ctx.unrolled = True
-    start = _as_bv(_eval(loop.start, env, ctx), ctx.w)
-    stop = _as_bv(_eval(loop.stop, env, ctx), ctx.w)
-
-    # Variables written in the loop must be initialized before it, so every
-    # merge below has a well-defined "iteration skipped" value.
-    written = _assigned_names(loop.body) - {loop.var}
-    missing = written - set(env)
-    if missing:
-        raise UnsupportedForProof(
-            f"variable(s) {sorted(missing)} assigned in a loop but not initialized before it"
-        )
+    start = _as_bv(_eval(loop.start, env, ctx, pc), ctx.w)
+    stop = _as_bv(_eval(loop.stop, env, ctx, pc), ctx.w)
+    written = _require_initialized(loop, env)
 
     cur = dict(env)
     for k in range(ctx.bound):
@@ -176,64 +178,68 @@ def _unroll_for(loop: ir.For, env: _Env, ctx: _Ctx) -> _Env:
         guard = idx < stop  # signed: iteration k runs iff start + k < stop
         body_env = dict(cur)
         body_env[loop.var] = idx
-        after = _exec_block_env(loop.body, body_env, ctx)
-        # Only merge the (scalar) variables the loop writes; list params and
-        # other inputs are immutable and must not be run through the scalar merge.
+        after = _exec_block_env(loop.body, body_env, ctx, z3.And(pc, guard))
         for name in written:
             cur[name] = _merge(guard, after[name], cur[name], ctx.w)
 
-    # In-bound assumption: the loop runs between 0 and `bound` times AND its
-    # index window does not wrap — i.e. stop in [start, start + bound] with no
-    # overflow. The no-wrap part matters: without it, a loop bound expression
-    # that overflows in fixed width (e.g. range(n + 1) at n = INT_MAX, which
-    # wraps to an empty range) would be falsely treated as in-bounds.
+    # In-bound assumption (guarded by pc): the loop runs 0..bound times and its
+    # index window does not wrap, i.e. stop in [start, start + bound] with no
+    # overflow. The no-wrap part keeps "up to bound N" honest even when the loop
+    # bound expression could overflow in fixed width.
     end = start + z3.BitVecVal(ctx.bound, ctx.w)
-    ctx.assumptions.append(z3.And(start <= end, start <= stop, stop <= end))
+    in_bound = z3.And(start <= end, start <= stop, stop <= end)
+    ctx.assumptions.append(z3.Implies(pc, in_bound))
     return cur
 
 
-def _unroll_foreach(loop: ir.ForEach, env: _Env, ctx: _Ctx) -> _Env:
+def _unroll_foreach(loop: ir.ForEach, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> _Env:
     ctx.unrolled = True
-    seq = _eval(loop.iterable, env, ctx)
+    seq = _eval(loop.iterable, env, ctx, pc)
     if not isinstance(seq, SymList):
         raise UnsupportedForProof("can only iterate a list[int]")
+    written = _require_initialized(loop, env)
 
+    # No extra in-bound assumption: list length is bounded to [0, bound] by
+    # make_inputs, so `bound` unrollings cover every valid list.
+    cur = dict(env)
+    for k in range(ctx.bound):
+        guard = z3.BitVecVal(k, ctx.w) < seq.length  # iteration k runs iff k < len
+        body_env = dict(cur)
+        body_env[loop.var] = z3.Select(seq.arr, z3.BitVecVal(k, ctx.w))
+        after = _exec_block_env(loop.body, body_env, ctx, z3.And(pc, guard))
+        for name in written:
+            cur[name] = _merge(guard, after[name], cur[name], ctx.w)
+    return cur
+
+
+def _require_initialized(loop, env: _Env) -> set[str]:
+    """Variables written in a loop must be initialized before it (so every merge
+    has a well-defined 'iteration skipped' value). Returns the written names."""
     written = _assigned_names(loop.body) - {loop.var}
     missing = written - set(env)
     if missing:
         raise UnsupportedForProof(
             f"variable(s) {sorted(missing)} assigned in a loop but not initialized before it"
         )
-
-    # No extra in-bound assumption: list length is already bounded to [0, bound]
-    # by make_inputs, so `bound` unrollings cover every valid list.
-    cur = dict(env)
-    for k in range(ctx.bound):
-        guard = z3.BitVecVal(k, ctx.w) < seq.length  # iteration k runs iff k < len
-        body_env = dict(cur)
-        body_env[loop.var] = z3.Select(seq.arr, z3.BitVecVal(k, ctx.w))
-        after = _exec_block_env(loop.body, body_env, ctx)
-        for name in written:
-            cur[name] = _merge(guard, after[name], cur[name], ctx.w)
-    return cur
+    return written
 
 
-def _exec_block_env(stmts, env: _Env, ctx: _Ctx) -> _Env:
+def _exec_block_env(stmts, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> _Env:
     """Execute a return-free block as an environment transformer."""
     cur = dict(env)
     for stmt in stmts:
         if isinstance(stmt, ir.Assign):
-            cur[stmt.target] = _eval(stmt.value, cur, ctx)
+            cur[stmt.target] = _eval(stmt.value, cur, ctx, pc)
         elif isinstance(stmt, ir.If):
-            cond = _as_bool(_eval(stmt.test, cur, ctx))
-            then_env = _exec_block_env(stmt.body, cur, ctx)
-            else_env = _exec_block_env(stmt.orelse, cur, ctx)
+            cond = _as_bool(_eval(stmt.test, cur, ctx, pc))
+            then_env = _exec_block_env(stmt.body, cur, ctx, z3.And(pc, cond))
+            else_env = _exec_block_env(stmt.orelse, cur, ctx, z3.And(pc, z3.Not(cond)))
             for name in _assigned_names(stmt.body) | _assigned_names(stmt.orelse):
                 cur[name] = _merge(cond, then_env[name], else_env[name], ctx.w)
         elif isinstance(stmt, ir.For):
-            cur = _unroll_for(stmt, cur, ctx)
+            cur = _unroll_for(stmt, cur, ctx, pc)
         elif isinstance(stmt, ir.ForEach):
-            cur = _unroll_foreach(stmt, cur, ctx)
+            cur = _unroll_foreach(stmt, cur, ctx, pc)
         else:  # ir.Return — blocked by the parser, but guard anyway
             raise UnsupportedForProof("`return` inside a loop is not supported")
     return cur
@@ -246,16 +252,16 @@ def _assigned_names(stmts) -> set[str]:
             names.add(stmt.target)
         elif isinstance(stmt, ir.If):
             names |= _assigned_names(stmt.body) | _assigned_names(stmt.orelse)
-        elif isinstance(stmt, ir.For):
-            names |= _assigned_names(stmt.body) - {stmt.var}
-        elif isinstance(stmt, ir.ForEach):
+        elif isinstance(stmt, (ir.For, ir.ForEach)):
             names |= _assigned_names(stmt.body) - {stmt.var}
     return names
 
 
 # --- expression evaluation -------------------------------------------------
+# `pc` is the path condition under which `node` is evaluated; runtime-error
+# terms are guarded by it so an error in a not-taken branch never fires.
 
-def _eval(node: ir.Expr, env: _Env, ctx: _Ctx) -> z3.ExprRef:
+def _eval(node: ir.Expr, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> z3.ExprRef:
     if isinstance(node, ir.Name):
         if node.id not in env:
             raise UnsupportedForProof(f"reference to unbound name {node.id!r}")
@@ -267,43 +273,56 @@ def _eval(node: ir.Expr, env: _Env, ctx: _Ctx) -> z3.ExprRef:
         return z3.BitVecVal(node.value, ctx.w)  # z3 reduces mod 2**w
 
     if isinstance(node, ir.BinOp):
-        return _eval_binop(node, env, ctx)
+        return _eval_binop(node, env, ctx, pc)
 
     if isinstance(node, ir.UnaryOp):
-        operand = _eval(node.operand, env, ctx)
+        operand = _eval(node.operand, env, ctx, pc)
         if node.op == "-":
             return -_as_bv(operand, ctx.w)
         return z3.Not(_as_bool(operand))
 
     if isinstance(node, ir.Compare):
-        return _eval_compare(node, env, ctx)
+        return _eval_compare(node, env, ctx, pc)
 
     if isinstance(node, ir.BoolOp):
-        parts = [_as_bool(_eval(v, env, ctx)) for v in node.values]
-        return z3.And(parts) if node.op == "and" else z3.Or(parts)
+        # Short-circuit: later operands only execute under the accumulated guard,
+        # so a guarded access like `i < len(xs) and xs[i] > 0` is error-free.
+        terms = []
+        cur_pc = pc
+        for value in node.values:
+            term = _as_bool(_eval(value, env, ctx, cur_pc))
+            terms.append(term)
+            cur_pc = z3.And(cur_pc, term if node.op == "and" else z3.Not(term))
+        return z3.And(terms) if node.op == "and" else z3.Or(terms)
 
     if isinstance(node, ir.IfExp):
-        cond = _as_bool(_eval(node.test, env, ctx))
-        return _merge(cond, _eval(node.body, env, ctx), _eval(node.orelse, env, ctx), ctx.w)
+        cond = _as_bool(_eval(node.test, env, ctx, pc))
+        body_val = _eval(node.body, env, ctx, z3.And(pc, cond))
+        else_val = _eval(node.orelse, env, ctx, z3.And(pc, z3.Not(cond)))
+        return _merge(cond, body_val, else_val, ctx.w)
 
     if isinstance(node, ir.Len):
-        value = _eval(node.value, env, ctx)
+        value = _eval(node.value, env, ctx, pc)
         if not isinstance(value, SymList):
             raise UnsupportedForProof("len() of a non-list value")
         return value.length
 
     if isinstance(node, ir.Subscript):
-        # Sound but conservative: `xs[i]` is only safe under an in-bounds guard,
-        # which we can't add per-access without path conditions yet. Decline so
-        # the orchestrator falls back to UNKNOWN rather than risk a false proof.
-        raise UnsupportedForProof("list indexing xs[i] is not modeled in proofs yet (use iteration)")
+        seq = _eval(node.value, env, ctx, pc)
+        if not isinstance(seq, SymList):
+            raise UnsupportedForProof("indexing a non-list value")
+        index = _as_bv(_eval(node.index, env, ctx, pc), ctx.w)
+        zero = z3.BitVecVal(0, ctx.w)
+        in_bounds = z3.And(zero <= index, index < seq.length)  # signed; no negative indexing
+        ctx.error_terms.append(z3.And(pc, z3.Not(in_bounds)))
+        return z3.Select(seq.arr, index)
 
     raise AssertionError(f"unhandled expression node: {node!r}")
 
 
-def _eval_binop(node: ir.BinOp, env: _Env, ctx: _Ctx) -> z3.ExprRef:
-    left = _as_bv(_eval(node.left, env, ctx), ctx.w)
-    right = _as_bv(_eval(node.right, env, ctx), ctx.w)
+def _eval_binop(node: ir.BinOp, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> z3.ExprRef:
+    left = _as_bv(_eval(node.left, env, ctx, pc), ctx.w)
+    right = _as_bv(_eval(node.right, env, ctx, pc), ctx.w)
     op = node.op
     if op == "+":
         return left + right
@@ -312,17 +331,15 @@ def _eval_binop(node: ir.BinOp, env: _Env, ctx: _Ctx) -> z3.ExprRef:
     if op == "*":
         return left * right
     if op in ("//", "%"):
-        if not (isinstance(node.right, ir.Const) and node.right.type_name == "int" and node.right.value != 0):
-            raise UnsupportedForProof(
-                "division/modulo by a non-constant or zero divisor is not modeled yet"
-            )
+        # Division/modulo by zero is a runtime error, guarded by the path condition.
+        ctx.error_terms.append(z3.And(pc, right == z3.BitVecVal(0, ctx.w)))
         return _floordiv(left, right) if op == "//" else _floormod(left, right)
     raise AssertionError(f"unhandled binop {op!r}")
 
 
-def _eval_compare(node: ir.Compare, env: _Env, ctx: _Ctx) -> z3.ExprRef:
-    left = _eval(node.left, env, ctx)
-    right = _eval(node.right, env, ctx)
+def _eval_compare(node: ir.Compare, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> z3.ExprRef:
+    left = _eval(node.left, env, ctx, pc)
+    right = _eval(node.right, env, ctx, pc)
     op = node.op
     if op in ("==", "!="):
         if z3.is_bool(left) and z3.is_bool(right):
@@ -340,9 +357,11 @@ def _eval_compare(node: ir.Compare, env: _Env, ctx: _Ctx) -> z3.ExprRef:
 
 
 # --- Python-faithful fixed-width arithmetic --------------------------------
+# These are total (defined even for a zero divisor); the value under a zero
+# divisor is unused because the guarded error term rules that input out.
 
 def _floordiv(a: z3.ExprRef, b: z3.ExprRef) -> z3.ExprRef:
-    """Floor division matching Python `//` (b is a non-zero constant)."""
+    """Floor division matching Python `//`."""
     q = a / b  # z3: signed division, truncates toward zero
     r = a - q * b
     zero = z3.BitVecVal(0, a.size())

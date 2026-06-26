@@ -127,9 +127,10 @@ EQUIVALENT  (stage: symbolic, 0.00s)
 > `COUNTEREXAMPLE` (SAT, decoded to concrete inputs), or `UNKNOWN`. Supported:
 > ints/bools, branches, `for ... in range(...)` and `for x in xs` loops (bounded
 > model checking), `assume(...)` preconditions, and bounded `list[int]` inputs
-> with `len`/iteration. `xs[i]` indexing runs in the differential stage but isn't
-> proven yet. Benchmarks pass with zero unsound verdicts. See
-> [ROADMAP.md](ROADMAP.md).
+> with `len`, iteration, and `xs[i]` indexing. Out-of-bounds access and
+> divide-by-zero are modeled as runtime errors (a rewrite that crashes where the
+> original didn't is a counterexample). Benchmarks pass with zero unsound
+> verdicts. See [ROADMAP.md](ROADMAP.md).
 
 ---
 
