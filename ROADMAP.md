@@ -31,14 +31,18 @@ Known M1 limitations (not false proofs — they fall back to UNKNOWN): division/
 - [x] Bounded model checking: in-bound assumption (loop trip count ≤ bound), so loop verdicts read "EQUIVALENT up to bound N"
 - [x] Concrete interpreter caps loops at `bound` (difftest stays in the same domain)
 - [x] Input preconditions: leading `assume(<expr>)` statements + CLI `--assume`, honored by both stages
+- [x] `list[int]` inputs: bounded-length symbolic arrays, `len(xs)`, `for x in xs` iteration (proven); `xs[i]` reads run in difftest
+- [ ] `xs[i]` indexing in *proofs* (needs per-access in-bounds guards under path conditions)
 - [ ] `return` / `break` / `continue` inside loops
-- [ ] Fixed-length arrays/lists as symbolic inputs (indexing, `len`, iteration)
+- [ ] List *outputs* (functions that build/return a list)
 - [ ] Optionally bounded strings
 
-### M3 — Demo + benchmarks
-- [ ] Curated gallery of real AI-refactor pairs (truly equivalent **and** subtly broken: off-by-one, overflow, reordered short-circuit)
-- [ ] README demo showing a caught bug (the midpoint-overflow case)
-- [ ] Timing-vs-bound charts; recall on the known-pairs set
+### M3 — Demo + benchmarks *(in progress)*
+- [x] Recall benchmark over the eval set with a zero-unsound-verdicts gate (`benchmarks/bench_recall.py`)
+- [x] Timing-vs-bound benchmark (`benchmarks/bench_scaling.py`)
+- [x] Eval set spanning truly-equivalent **and** subtly-broken pairs (off-by-one, overflow, loop/array bugs)
+- [ ] README demo image showing a caught bug (the midpoint-overflow case)
+- [ ] Curated gallery of real AI-refactor pairs (beyond the unit fixtures)
 
 ### M4 — Stretch
 - [ ] C subset

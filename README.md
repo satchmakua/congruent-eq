@@ -113,13 +113,22 @@ EQUIVALENT  (stage: symbolic, 0.00s)
 
 Declare a precondition inline with a leading `assume(...)` in the reference function, or pass `--assume` on the CLI.
 
-> **Status: M0 + M1 live; M2 in progress.** The differential stage catches
-> counterexamples (overflow included) under a fixed-width integer model; the
-> symbolic stage lowers both functions to Z3 bitvector expressions and returns
-> `EQUIVALENT` (UNSAT), a `COUNTEREXAMPLE` (SAT, decoded to concrete inputs), or
-> `UNKNOWN`. `for ... in range(...)` loops are unrolled to `--bound` via bounded
-> model checking, and `assume(...)` preconditions restrict the input domain.
-> Remaining M2 work: arrays and `return` inside loops. See
+And it reasons about `list[int]` inputs — here it proves a hand-written count equals `len`, for every list up to the length bound:
+
+```console
+$ congruent original.py:f candidate.py:g          # len(xs)  vs  count loop
+EQUIVALENT  (stage: symbolic, 0.00s)
+  note: holds within bound: lists up to length 8, loops up to 8 iterations
+```
+
+> **Status: M0–M2 core complete.** The differential stage catches counterexamples
+> (overflow included) under a fixed-width integer model; the symbolic stage lowers
+> both functions to Z3 bitvector expressions and returns `EQUIVALENT` (UNSAT), a
+> `COUNTEREXAMPLE` (SAT, decoded to concrete inputs), or `UNKNOWN`. Supported:
+> ints/bools, branches, `for ... in range(...)` and `for x in xs` loops (bounded
+> model checking), `assume(...)` preconditions, and bounded `list[int]` inputs
+> with `len`/iteration. `xs[i]` indexing runs in the differential stage but isn't
+> proven yet. Benchmarks pass with zero unsound verdicts. See
 > [ROADMAP.md](ROADMAP.md).
 
 ---
@@ -162,6 +171,17 @@ tests/
   test_equiv.py
 benchmarks/     # timing vs bound; recall on known pairs
 ```
+
+## Benchmarks
+
+```bash
+python benchmarks/bench_recall.py     # verdict vs. expectation over the eval set
+python benchmarks/bench_scaling.py    # solver time vs. --bound
+```
+
+`bench_recall.py` exits non-zero if any verdict is unsound (a false `EQUIVALENT`
+or false `COUNTEREXAMPLE`), so it doubles as a soundness gate — currently 10/10
+fixtures decided, 0 unsound.
 
 ## Roadmap & progress
 
