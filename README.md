@@ -90,12 +90,23 @@ EQUIVALENT  (stage: symbolic, 0.00s)
 
 One screenshot of *proof-or-counterexample on a real AI refactor* communicates the whole value.
 
-> **Status: M0 + M1 are live.** The differential stage catches counterexamples
-> (overflow included) under a fixed-width integer model; the symbolic stage
-> lowers both functions to Z3 bitvector expressions and returns `EQUIVALENT`
-> (UNSAT), a `COUNTEREXAMPLE` (SAT, decoded to concrete inputs), or `UNKNOWN`.
-> Current scope is loop-free functions over ints/bools — loops and arrays are
-> M2. See [ROADMAP.md](ROADMAP.md).
+It also handles bounded loops. A reversed-accumulation refactor is proven equivalent up to the unroll bound:
+
+```console
+$ congruent original.py:f candidate.py:g --bound 8   # sum i  vs  sum (n-1-i)
+EQUIVALENT  (stage: symbolic, 0.01s)
+  equivalent up to bound 8
+  note: 32-bit two's-complement integers
+  note: holds where every loop runs within bound 8
+```
+
+> **Status: M0 + M1 live; M2 (loops) landed.** The differential stage catches
+> counterexamples (overflow included) under a fixed-width integer model; the
+> symbolic stage lowers both functions to Z3 bitvector expressions and returns
+> `EQUIVALENT` (UNSAT), a `COUNTEREXAMPLE` (SAT, decoded to concrete inputs), or
+> `UNKNOWN`. `for ... in range(...)` loops are unrolled to `--bound` via bounded
+> model checking. Remaining M2 work: arrays, input preconditions, and `return`
+> inside loops. See [ROADMAP.md](ROADMAP.md).
 
 ---
 

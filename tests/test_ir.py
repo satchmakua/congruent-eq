@@ -8,6 +8,7 @@ from congruent.ir import (
     BinOp,
     BoolOp,
     Compare,
+    For,
     UnsupportedConstruct,
     parse_function,
 )
@@ -45,11 +46,27 @@ def test_aug_assign_desugars_to_binop() -> None:
     assert isinstance(assign.value, BinOp) and assign.value.op == "+"
 
 
+def test_parse_for_range_loop() -> None:
+    src = (
+        "def f(n: int) -> int:\n"
+        "    total = 0\n"
+        "    for i in range(n):\n"
+        "        total = total + i\n"
+        "    return total"
+    )
+    fn = parse_function(src, "f")
+    loop = fn.body[1]
+    assert isinstance(loop, For)
+    assert loop.var == "i"
+
+
 @pytest.mark.parametrize(
     "source",
     [
         "def f(x: int) -> int:\n    while x:\n        x = x - 1\n    return x",  # while loop
-        "def f(x: int) -> int:\n    for i in range(x):\n        x = x + 1\n    return x",  # for loop
+        "def f(x: int) -> int:\n    for i in range(x):\n        return i",  # return in loop
+        "def f(x: int) -> int:\n    for i in range(x):\n        pass\n    else:\n        pass\n    return x",  # for/else
+        "def f(x: int) -> int:\n    for i in range(0, x, 2):\n        x = x + 1\n    return x",  # range step
         "def f(x: float) -> float:\n    return x",  # float type
         "def f(x: int) -> int:\n    import os\n    return x",  # import
         "def f(x: int) -> int:\n    return x / 2",  # true division (-> float)

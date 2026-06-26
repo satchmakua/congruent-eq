@@ -26,9 +26,13 @@ Integer/bool arithmetic + branches lowered to Z3; `UNSAT`/`SAT` → verdict; dec
 
 Known M1 limitations (not false proofs — they fall back to UNKNOWN): division/modulo by a non-constant or zero divisor isn't modeled; list params aren't symbolic yet.
 
-### M2 — Bounded loops + arrays
-- [ ] Unroll loops/recursion to depth `k`; report the bound
-- [ ] Fixed-length arrays/lists as symbolic inputs
+### M2 — Bounded loops + arrays *(in progress)*
+- [x] `for ... in range(...)` loops: unroll to depth `bound`, report the bound
+- [x] Bounded model checking: in-bound assumption (loop trip count ≤ bound), so loop verdicts read "EQUIVALENT up to bound N"
+- [x] Concrete interpreter caps loops at `bound` (difftest stays in the same domain)
+- [ ] `return` / `break` / `continue` inside loops
+- [ ] Input preconditions (`assume`), so e.g. `sum_to_n` can be asked over `n >= 0`
+- [ ] Fixed-length arrays/lists as symbolic inputs (indexing, `len`, iteration)
 - [ ] Optionally bounded strings
 
 ### M3 — Demo + benchmarks

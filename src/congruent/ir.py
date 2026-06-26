@@ -14,12 +14,13 @@ Supported subset (v1):
     - comparisons: < <= > >= == !=   (including chained: a < b < c)
     - boolean logic: and / or / not
     - integer and boolean literals
+    - `for <var> in range(...)` bounded loops (M2; no `return` inside the loop)
 
-Out of scope for v1 (raise `UnsupportedConstruct` loudly — never ignored):
-    loops, while, recursion-via-call, floats, strings, I/O, global mutation,
-    list/attribute/subscript assignment, comprehensions, exceptions. Bounded
-    loops and arrays arrive in M2 (see ROADMAP.md). Refusing to model a
-    construct is what keeps verdicts honest.
+Out of scope (raise `UnsupportedConstruct` loudly — never ignored):
+    while, recursion-via-call, floats, strings, I/O, global mutation,
+    list/attribute/subscript assignment, comprehensions, exceptions,
+    `return`/`break`/`continue` inside a loop. Arrays arrive later in M2 (see
+    ROADMAP.md). Refusing to model a construct is what keeps verdicts honest.
 """
 
 from __future__ import annotations
@@ -102,7 +103,22 @@ class If:
     orelse: tuple["Stmt", ...]
 
 
-Stmt = Union[Return, Assign, If]
+@dataclass(frozen=True)
+class For:
+    """`for <var> in range(<start>, <stop>)` — a bounded counting loop.
+
+    `range(stop)` is normalized to start = literal 0. The loop is unrolled to
+    `--bound` iterations (symbolic) / capped at `--bound` (concrete); inputs
+    that would drive more iterations are out of scope for the verdict.
+    """
+
+    var: str
+    start: Expr
+    stop: Expr
+    body: tuple["Stmt", ...]
+
+
+Stmt = Union[Return, Assign, If, For]
 
 
 @dataclass(frozen=True)
@@ -229,12 +245,53 @@ def _lower_stmt(node: ast.stmt) -> Stmt:
             _lower_block(node.orelse),
         )
 
+    if isinstance(node, ast.For):
+        return _lower_for(node)
+
     if isinstance(node, ast.Pass):
         # harmless no-op; lower to an empty if-false would be silly — drop it.
         # Represent as an If with empty branches so the type stays simple.
         return If(Const(False, "bool"), (), ())
 
     raise UnsupportedConstruct(f"unsupported statement: {type(node).__name__}")
+
+
+def _lower_for(node: ast.For) -> For:
+    if node.orelse:
+        raise UnsupportedConstruct("for/else is not supported")
+    if not isinstance(node.target, ast.Name):
+        raise UnsupportedConstruct("loop target must be a single name")
+    if not (
+        isinstance(node.iter, ast.Call)
+        and isinstance(node.iter.func, ast.Name)
+        and node.iter.func.id == "range"
+    ):
+        raise UnsupportedConstruct("loops must iterate over range(...)")
+    args = node.iter.args
+    if node.iter.keywords or not 1 <= len(args) <= 2:
+        raise UnsupportedConstruct("only range(stop) and range(start, stop) are supported")
+    if len(args) == 1:
+        start: Expr = Const(0, "int")
+        stop = _lower_expr(args[0])
+    else:
+        start = _lower_expr(args[0])
+        stop = _lower_expr(args[1])
+
+    body = _lower_block(node.body)
+    if _contains_return(body):
+        raise UnsupportedConstruct("`return` inside a loop is not supported yet")
+    return For(node.target.id, start, stop, body)
+
+
+def _contains_return(stmts: tuple[Stmt, ...]) -> bool:
+    for stmt in stmts:
+        if isinstance(stmt, Return):
+            return True
+        if isinstance(stmt, If) and (_contains_return(stmt.body) or _contains_return(stmt.orelse)):
+            return True
+        if isinstance(stmt, For) and _contains_return(stmt.body):
+            return True
+    return False
 
 
 def _lower_expr(node: ast.expr) -> Expr:

@@ -62,3 +62,46 @@ def test_width_sensitive_equivalence() -> None:
     b = "def g(x: int) -> int:\n    return x * 2"
     assert _check(a, b, int_width=8).status is Status.EQUIVALENT
     assert _check(a, b, int_width=64).status is Status.EQUIVALENT
+
+
+# --- bounded loops (M2) ----------------------------------------------------
+
+_SUM = "def f(n: int) -> int:\n    total = 0\n    for i in range(n):\n        total = total + i\n    return total"
+
+
+def test_proves_loop_reorder_equivalent() -> None:
+    rev = (
+        "def g(n: int) -> int:\n    total = 0\n"
+        "    for i in range(n):\n        total = total + (n - 1 - i)\n    return total"
+    )
+    verdict = _check(_SUM, rev)
+    assert verdict.status is Status.EQUIVALENT
+    assert verdict.stage == "symbolic"
+
+
+def test_loop_equivalence_is_reported_as_bounded() -> None:
+    rev = (
+        "def g(n: int) -> int:\n    total = 0\n"
+        "    for i in range(n):\n        total = total + (n - 1 - i)\n    return total"
+    )
+    verdict = _check(_SUM, rev, bound=8)
+    assert any("within bound" in note for note in verdict.assumptions)
+
+
+def test_loop_off_by_one_is_a_counterexample() -> None:
+    plus_one = (
+        "def g(n: int) -> int:\n    total = 0\n"
+        "    for i in range(n + 1):\n        total = total + i\n    return total"
+    )
+    assert _check(_SUM, plus_one).status is Status.COUNTEREXAMPLE
+
+
+def test_loop_variable_not_initialized_before_loop_falls_back() -> None:
+    # `last` is assigned only inside the loop; the symbolic stage declines to
+    # model it (would be unbound if the loop runs zero times) -> UNKNOWN, not a
+    # false proof, even though the two functions are textually identical.
+    body = "    for i in range(n):\n        last = i\n    return last"
+    a = f"def f(n: int) -> int:\n{body}"
+    b = f"def g(n: int) -> int:\n{body}"
+    verdict = _check(a, b)
+    assert verdict.status is Status.UNKNOWN

@@ -15,20 +15,25 @@ A fixture module defines:
 - `NOTE` — one line on what the pair exercises (and, for counterexamples, the
   kind of input that should break it).
 
-Functions stay inside the supported v1 subset (typed params; int/bool;
-arithmetic, comparisons, boolean logic; `if/else`; conditional expressions).
-Loops and arrays arrive in M2 — see `../../ROADMAP.md`.
+Functions stay inside the supported subset (typed params; int/bool; arithmetic,
+comparisons, boolean logic; `if/else`; conditional expressions; `for ... in
+range(...)` loops without `return` inside). Arrays arrive later — see
+`../../ROADMAP.md`.
 
 Every pair must be correct under the tool's semantics: integers are modeled as
 fixed-width two's-complement, and scalar `int` inputs range over the **whole**
-machine-int domain (not a small bound). A pair is only `EQUIVALENT` if it holds
-for every input at the configured width — a loop summed against a closed form,
-for instance, is *not* equivalent once overflow is in play, so it belongs in M2
-with bounded input domains, not here.
+machine-int domain. For loop-free pairs, `EQUIVALENT` means equal at every
+input. For pairs with loops, the verdict is bounded: loops are checked up to
+`--bound` iterations, and inputs that would drive more are out of scope — so a
+loop pair must be equivalent for *all* inputs whose loop stays within the bound
+(a loop summed against a closed form fails this once overflow bites, and also
+needs an `n >= 0` precondition the tool can't yet express — hence it's not here).
 
 ## Files
 
 - `midpoint_overflow.py` — `COUNTEREXAMPLE`: 32-bit overflow in `(lo + hi) // 2`.
 - `off_by_one.py` — `COUNTEREXAMPLE`: `<=` changed to `<`; diverges at `x == 0`.
+- `loop_off_by_one.py` — `COUNTEREXAMPLE`: `range(n)` vs `range(n + 1)`.
 - `distribute.py` — `EQUIVALENT`: distributivity of `*` over `+` (holds mod 2**w).
 - `abs_branch.py` — `EQUIVALENT`: ternary vs. if/else absolute value.
+- `loop_reorder.py` — `EQUIVALENT`: reversed loop accumulation (bounded).

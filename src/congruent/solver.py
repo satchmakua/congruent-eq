@@ -38,30 +38,39 @@ def prove_equivalence(
             differential verdict rather than guess.
     """
     inputs = symbolic.make_input_symbols(original.params, int_width)
-    out_original = symbolic.summarize(original, inputs, int_width)
-    out_candidate = symbolic.summarize(candidate, inputs, int_width)
+    summary_o = symbolic.summarize(original, inputs, int_width, bound)
+    summary_c = symbolic.summarize(candidate, inputs, int_width, bound)
 
     solver = z3.Solver()
-    solver.add(_differ(out_original, out_candidate, int_width))
+    # Only ask about inputs where every loop stays within the bound.
+    in_bounds = summary_o.assumptions + summary_c.assumptions
+    for assumption in in_bounds:
+        solver.add(assumption)
+    solver.add(_differ(summary_o.output, summary_c.output, int_width))
 
     start = time.perf_counter()
     result = solver.check()
     elapsed = time.perf_counter() - start
 
+    unrolled = summary_o.unrolled or summary_c.unrolled
+
     if result == z3.unsat:
-        # The M1 subset is loop-free, so the summary is exact: UNSAT means the
-        # outputs agree on *every* input at this width, not just within a bound.
+        if unrolled:
+            scope_note = f"holds where every loop runs within bound {bound}"
+        else:
+            # Loop-free: the summary is exact, so UNSAT covers every input.
+            scope_note = f"complete: agree on all {int_width}-bit inputs (no loops to bound)"
         return Verdict(
             status=Status.EQUIVALENT,
             bound=bound,
             solver_time=elapsed,
             stage="symbolic",
-            assumptions=assumptions + [f"complete: agree on all {int_width}-bit inputs (no loops to bound)"],
+            assumptions=assumptions + [scope_note],
         )
 
     if result == z3.sat:
         model = solver.model()
-        cx = _decode_model(model, inputs, original.params, out_original, out_candidate)
+        cx = _decode_model(model, inputs, original.params, summary_o.output, summary_c.output)
         return Verdict(
             status=Status.COUNTEREXAMPLE,
             bound=bound,

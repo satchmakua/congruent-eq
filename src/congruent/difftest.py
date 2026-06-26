@@ -44,22 +44,27 @@ class _Return(Exception):
         self.value = value
 
 
-class _Ctx:
-    __slots__ = ("width",)
+class _OutOfBound(Exception):
+    """A loop would run more than `bound` iterations — outside the verdict's scope."""
 
-    def __init__(self, width: int) -> None:
+
+class _Ctx:
+    __slots__ = ("width", "bound")
+
+    def __init__(self, width: int, bound: int) -> None:
         self.width = width
+        self.bound = bound
 
 
 def _truth(value: object) -> bool:
     return value != 0 if isinstance(value, int) and not isinstance(value, bool) else bool(value)
 
 
-def _eval_function(fn: Function, args: list[object], width: int) -> object:
+def _eval_function(fn: Function, args: list[object], width: int, bound: int) -> object:
     env: dict[str, object] = {}
     for param, value in zip(fn.params, args):
         env[param.name] = _wrap(value, width) if param.type_name == "int" else value
-    ctx = _Ctx(width)
+    ctx = _Ctx(width, bound)
     try:
         _exec_block(fn.body, env, ctx)
     except _Return as r:
@@ -81,6 +86,16 @@ def _exec_stmt(stmt: ir.Stmt, env: dict[str, object], ctx: _Ctx) -> None:
     if isinstance(stmt, ir.If):
         branch = stmt.body if _truth(_eval(stmt.test, env, ctx)) else stmt.orelse
         _exec_block(branch, env, ctx)
+        return
+    if isinstance(stmt, ir.For):
+        start = int(_eval(stmt.start, env, ctx))  # type: ignore[arg-type]
+        stop = int(_eval(stmt.stop, env, ctx))  # type: ignore[arg-type]
+        if stop - start > ctx.bound:
+            raise _OutOfBound
+        for i in range(start, stop):
+            env[stmt.var] = _wrap(i, ctx.width)
+            _exec_block(stmt.body, env, ctx)
+        env.pop(stmt.var, None)  # loop variable does not escape the loop
         return
     raise AssertionError(f"unhandled statement node: {stmt!r}")
 
@@ -212,18 +227,25 @@ def find_counterexample(
     )
 
     for values in inputs:
-        cx = _compare(original, candidate, values, int_width)
+        cx = _compare(original, candidate, values, int_width, bound)
         if cx is not None:
             return cx
     return None
 
 
-def _outcome(fn: Function, values: list[object], width: int) -> tuple[bool, object]:
-    """Return (ok, payload): (True, return_value) or (False, exception_name)."""
+# outcome kinds
+_VALUE = "value"
+_ERROR = "error"
+_OOB = "oob"  # a loop exceeded the bound on this input — out of scope, skip it
+
+
+def _outcome(fn: Function, values: list[object], width: int, bound: int) -> tuple[str, object]:
     try:
-        return True, _eval_function(fn, [_copy(v) for v in values], width)
+        return _VALUE, _eval_function(fn, [_copy(v) for v in values], width, bound)
+    except _OutOfBound:
+        return _OOB, None
     except Exception as exc:  # noqa: BLE001 — any divergence in behavior counts
-        return False, type(exc).__name__
+        return _ERROR, type(exc).__name__
 
 
 def _copy(value: object) -> object:
@@ -231,20 +253,21 @@ def _copy(value: object) -> object:
 
 
 def _compare(
-    original: Function, candidate: Function, values: list[object], width: int
+    original: Function, candidate: Function, values: list[object], width: int, bound: int
 ) -> Counterexample | None:
-    ok_o, out_o = _outcome(original, values, width)
-    ok_c, out_c = _outcome(candidate, values, width)
+    kind_o, out_o = _outcome(original, values, width, bound)
+    kind_c, out_c = _outcome(candidate, values, width, bound)
 
-    if ok_o and ok_c:
-        if out_o == out_c:
-            return None
-    elif (not ok_o) and (not ok_c) and out_o == out_c:
+    if kind_o == _OOB or kind_c == _OOB:
+        return None  # at least one function runs past the bound here — not in scope
+    if kind_o == _VALUE and kind_c == _VALUE and out_o == out_c:
+        return None
+    if kind_o == _ERROR and kind_c == _ERROR and out_o == out_c:
         return None  # both raise the same exception — equivalent on this input
 
     inputs = {p.name: _copy(v) for p, v in zip(original.params, values)}
     return Counterexample(
         inputs=inputs,
-        original_output=out_o if ok_o else f"<raises {out_o}>",
-        candidate_output=out_c if ok_c else f"<raises {out_c}>",
+        original_output=out_o if kind_o == _VALUE else f"<raises {out_o}>",
+        candidate_output=out_c if kind_c == _VALUE else f"<raises {out_c}>",
     )
