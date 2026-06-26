@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 292" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="15">
+  <rect x="8" y="8" width="744" height="276" rx="10" fill="#161b22" stroke="#30363d"/>
+  <circle cx="34" cy="28" r="6" fill="#ff5f56"/>
+  <circle cx="54" cy="28" r="6" fill="#ffbd2e"/>
+  <circle cx="74" cy="28" r="6" fill="#27c93f"/>
+  <text x="380" y="33" fill="#8b949e" font-size="13" text-anchor="middle">congruent — proof or counterexample</text>
+  <line x1="8" y1="50" x2="752" y2="50" stroke="#30363d"/>
+
+  <text x="26" y="86" xml:space="preserve"><tspan fill="#56d364">$ </tspan><tspan fill="#c9d1d9">congruent original.py:mid candidate.py:mid --int-width 32</tspan></text>
+
+  <text x="26" y="132" xml:space="preserve"><tspan fill="#f85149" font-weight="bold">COUNTEREXAMPLE</tspan><tspan fill="#8b949e">  (stage: difftest)</tspan></text>
+  <text x="26" y="160" xml:space="preserve"><tspan fill="#8b949e">  inputs:    </tspan><tspan fill="#c9d1d9">lo = 1, hi = 2147483647</tspan></text>
+  <text x="26" y="188" xml:space="preserve"><tspan fill="#8b949e">  original:  </tspan><tspan fill="#c9d1d9">1073741824</tspan></text>
+  <text x="26" y="216" xml:space="preserve"><tspan fill="#8b949e">  candidate: </tspan><tspan fill="#f85149">-1073741824</tspan><tspan fill="#6e7681">    # 32-bit overflow in (lo + hi)</tspan></text>
+  <text x="26" y="244" xml:space="preserve"><tspan fill="#6e7681">  note: 32-bit two's-complement integers</tspan></text>
+</svg>

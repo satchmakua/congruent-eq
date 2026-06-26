@@ -64,6 +64,7 @@ def check(
     int_width: int = 32,
     trials: int = 2000,
     seed: int = 0,
+    minimize: bool = True,
 ) -> Verdict:
     """Decide behavioral equivalence of two functions up to `bound`.
 
@@ -83,9 +84,10 @@ def check(
     from congruent.difftest import find_counterexample  # local import avoids a cycle
 
     assumptions = [f"{int_width}-bit two's-complement integers"]
-    precond_texts = [pc.text for pc in original.preconditions] + [
-        pc.text for pc in candidate.preconditions
-    ]
+    precond_texts: list[str] = []
+    for pc in (*original.preconditions, *candidate.preconditions):
+        if pc.text not in precond_texts:  # dedupe (both functions may declare it)
+            precond_texts.append(pc.text)
     if precond_texts:
         assumptions.append("precondition: " + " and ".join(precond_texts))
 
@@ -99,38 +101,36 @@ def check(
             assumptions=[f"signatures differ: original {orig_types} vs candidate {cand_types}"],
         )
 
-    # Stage 1 — differential testing (cheap; finds obvious counterexamples).
+    def unknown(reason: str) -> Verdict:
+        note = "no counterexample found by differential testing; equivalence not proven"
+        return Verdict(
+            status=Status.UNKNOWN, bound=bound, stage="difftest",
+            assumptions=assumptions + [f"{note} ({reason})"],
+        )
+
+    # Stage 1 — differential testing (cheap; boundary witnesses are already minimal).
     cx = find_counterexample(
         original, candidate, bound=bound, int_width=int_width, trials=trials, seed=seed
     )
     if cx is not None:
         return Verdict(
-            status=Status.COUNTEREXAMPLE,
-            bound=bound,
-            counterexample=cx,
-            stage="difftest",
-            assumptions=assumptions,
+            status=Status.COUNTEREXAMPLE, bound=bound, counterexample=cx,
+            stage="difftest", assumptions=assumptions,
         )
 
-    # Stage 2 — symbolic execution + SMT. This is the stage that can return
-    # EQUIVALENT (UNSAT). If it can't soundly model the functions, fall back to
-    # the honest UNKNOWN rather than risk a false proof.
-    fallback_note = "no counterexample found by differential testing; equivalence not proven"
+    # Stage 2 — symbolic execution + SMT: proves EQUIVALENT (UNSAT) or yields a
+    # *minimized* COUNTEREXAMPLE. If it can't soundly model the functions, fall
+    # back to honest UNKNOWN rather than risk a false proof.
     try:
         from congruent.solver import prove_equivalence
         from congruent.symbolic import UnsupportedForProof
     except ImportError:
-        return Verdict(
-            status=Status.UNKNOWN, bound=bound, stage="difftest",
-            assumptions=assumptions + [f"{fallback_note} (z3 not installed; symbolic stage skipped)"],
-        )
+        return unknown("z3 not installed; symbolic stage skipped")
 
     try:
         return prove_equivalence(
-            original, candidate, bound=bound, int_width=int_width, assumptions=assumptions
+            original, candidate,
+            bound=bound, int_width=int_width, assumptions=assumptions, minimize=minimize,
         )
     except UnsupportedForProof as exc:
-        return Verdict(
-            status=Status.UNKNOWN, bound=bound, stage="difftest",
-            assumptions=assumptions + [f"{fallback_note} (symbolic stage declined: {exc})"],
-        )
+        return unknown(f"symbolic stage declined: {exc}")

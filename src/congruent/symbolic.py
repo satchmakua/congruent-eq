@@ -1,9 +1,12 @@
 """Symbolic interpreter — Stage 2 core: IR -> Z3 expressions.
 
 This is path (A) from the foundational doc §3: a from-scratch mini symbolic
-interpreter. It lowers a function to a Z3 *summary* over fresh symbolic inputs.
-Branches and early `return`s are handled by continuation-passing path merging;
-bounded `for` loops are unrolled to `--bound` iterations.
+interpreter. It lowers a function to a Z3 *summary* over fresh symbolic inputs in
+a single state-threading pass that carries `(env, returned, return_value)`. Each
+statement executes only where it is "live" (`pc ∧ ¬returned`), so an early
+`return` anywhere — including inside a loop — correctly short-circuits the rest.
+Bounded `for` loops are unrolled to `--bound` iterations. Falling off the end
+without returning is folded into the error condition (Python would return None).
 
 **Semantics must mirror `difftest`'s concrete interpreter exactly**, or the two
 stages could disagree:
@@ -26,9 +29,9 @@ by the loop's path condition — that is what makes a loop verdict an honest
 "EQUIVALENT up to bound N". `list[int]` inputs are length-bounded to `bound`, so
 iterating one is always within the unroll bound.
 
-Anything not soundly modeled (loop bodies that `return`, list params of other
-types, variables first assigned inside a loop) raises `UnsupportedForProof`; the
-orchestrator then falls back to the differential verdict.
+Anything not soundly modeled (unsupported param types, variables first assigned
+inside a loop, a variable possibly-undefined after an `if`) raises
+`UnsupportedForProof`; the orchestrator then falls back to the differential verdict.
 """
 
 from __future__ import annotations
@@ -67,7 +70,7 @@ class Summary:
 
 
 class _Ctx:
-    __slots__ = ("w", "bound", "assumptions", "unrolled", "error_terms")
+    __slots__ = ("w", "bound", "assumptions", "unrolled", "error_terms", "ret_is_bool")
 
     def __init__(self, width: int, bound: int) -> None:
         self.w = width
@@ -75,6 +78,7 @@ class _Ctx:
         self.assumptions: list[z3.BoolRef] = []
         self.error_terms: list[z3.BoolRef] = []
         self.unrolled = False
+        self.ret_is_bool = False
 
 
 def make_inputs(
@@ -119,54 +123,70 @@ def summarize(
     """Lower `function` to a `Summary` over the (positionally bound) inputs."""
     env: _Env = {p.name: sym for p, sym in zip(function.params, input_symbols)}
     ctx = _Ctx(int_width, bound)
+    ctx.ret_is_bool = function.return_type == "bool"
+    retval0 = z3.BoolVal(False) if ctx.ret_is_bool else z3.BitVecVal(0, int_width)
 
-    def fell_off_end(_env: _Env, _pc: z3.BoolRef) -> z3.ExprRef:
-        raise UnsupportedForProof(f"{function.name}: a path may fall off the end without returning")
+    _env, returned, retval = _exec_seq(function.body, env, ctx, _TRUE, z3.BoolVal(False), retval0)
 
-    output = _exec_stmts(function.body, env, ctx, fell_off_end, _TRUE)
-    error = z3.Or(ctx.error_terms) if ctx.error_terms else z3.BoolVal(False)
-    return Summary(output, error, ctx.assumptions, ctx.unrolled)
-
-
-# --- statement execution (continuation-passing; `return` allowed here) ------
-# Continuations have signature k(env, pc) -> ExprRef and compute the return
-# value of "the rest of the function" reached under path condition `pc`.
-
-def _exec_stmts(stmts, env: _Env, ctx: _Ctx, k, pc: z3.BoolRef) -> z3.ExprRef:
-    if not stmts:
-        return k(env, pc)
-    head, rest = stmts[0], stmts[1:]
-
-    if isinstance(head, ir.Return):
-        return _eval(head.value, env, ctx, pc)
-
-    if isinstance(head, ir.Assign):
-        new_env = dict(env)
-        new_env[head.target] = _eval(head.value, env, ctx, pc)
-        return _exec_stmts(rest, new_env, ctx, k, pc)
-
-    if isinstance(head, ir.If):
-        cond = _as_bool(_eval(head.test, env, ctx, pc))
-
-        def k_rest(env_after: _Env, pc_after: z3.BoolRef) -> z3.ExprRef:
-            return _exec_stmts(rest, env_after, ctx, k, pc_after)
-
-        then_val = _exec_stmts(head.body, env, ctx, k_rest, z3.And(pc, cond))
-        else_val = _exec_stmts(head.orelse, env, ctx, k_rest, z3.And(pc, z3.Not(cond)))
-        return _merge(cond, then_val, else_val, ctx.w)
-
-    if isinstance(head, ir.For):
-        return _exec_stmts(rest, _unroll_for(head, env, ctx, pc), ctx, k, pc)
-
-    if isinstance(head, ir.ForEach):
-        return _exec_stmts(rest, _unroll_foreach(head, env, ctx, pc), ctx, k, pc)
-
-    raise AssertionError(f"unhandled statement node: {head!r}")
+    # Falling off the end without returning is itself a runtime error (Python
+    # would return None), so it's folded into the error condition.
+    error = z3.Or(ctx.error_terms + [z3.Not(returned)])
+    return Summary(retval, error, ctx.assumptions, ctx.unrolled)
 
 
-# --- loop unrolling (env transformer; `return` inside the loop is rejected) --
+# --- statement execution (single state-threading pass) ----------------------
+# Threads (env, returned, retval) through a statement sequence. `returned` is the
+# condition under which the function has already returned; statements execute
+# only where they are "live" = pc ∧ ¬returned, so a `return` anywhere (including
+# inside a loop) correctly short-circuits the rest.
 
-def _unroll_for(loop: ir.For, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> _Env:
+def _exec_seq(
+    stmts, env: _Env, ctx: _Ctx, pc: z3.BoolRef, returned: z3.BoolRef, retval: z3.ExprRef
+):
+    cur = dict(env)
+    for stmt in stmts:
+        live = z3.And(pc, z3.Not(returned))
+
+        if isinstance(stmt, ir.Return):
+            raw = _eval(stmt.value, cur, ctx, live)
+            val = _as_bool(raw) if ctx.ret_is_bool else _as_bv(raw, ctx.w)
+            retval = z3.If(live, val, retval)
+            returned = z3.Or(returned, live)
+
+        elif isinstance(stmt, ir.Assign):
+            val = _eval(stmt.value, cur, ctx, live)
+            cur[stmt.target] = _merge(live, val, cur[stmt.target], ctx.w) if stmt.target in cur else val
+
+        elif isinstance(stmt, ir.If):
+            cond = _as_bool(_eval(stmt.test, cur, ctx, live))
+            then_env, returned, retval = _exec_seq(
+                stmt.body, cur, ctx, z3.And(live, cond), returned, retval
+            )
+            else_env, returned, retval = _exec_seq(
+                stmt.orelse, cur, ctx, z3.And(live, z3.Not(cond)), returned, retval
+            )
+            for name in _assigned_names(stmt.body) | _assigned_names(stmt.orelse):
+                then_v = then_env.get(name, cur.get(name))
+                else_v = else_env.get(name, cur.get(name))
+                if then_v is None or else_v is None:
+                    raise UnsupportedForProof(f"variable {name!r} may be undefined after an if")
+                cur[name] = _merge(cond, then_v, else_v, ctx.w)
+
+        elif isinstance(stmt, ir.For):
+            cur, returned, retval = _unroll_for(stmt, cur, ctx, live, returned, retval)
+
+        elif isinstance(stmt, ir.ForEach):
+            cur, returned, retval = _unroll_foreach(stmt, cur, ctx, live, returned, retval)
+
+        else:
+            raise AssertionError(f"unhandled statement node: {stmt!r}")
+
+    return cur, returned, retval
+
+
+# --- loop unrolling (threads control state; `return` inside loops is allowed) -
+
+def _unroll_for(loop: ir.For, env: _Env, ctx: _Ctx, pc, returned, retval):
     ctx.unrolled = True
     start = _as_bv(_eval(loop.start, env, ctx, pc), ctx.w)
     stop = _as_bv(_eval(loop.stop, env, ctx, pc), ctx.w)
@@ -178,7 +198,7 @@ def _unroll_for(loop: ir.For, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> _Env:
         guard = idx < stop  # signed: iteration k runs iff start + k < stop
         body_env = dict(cur)
         body_env[loop.var] = idx
-        after = _exec_block_env(loop.body, body_env, ctx, z3.And(pc, guard))
+        after, returned, retval = _exec_seq(loop.body, body_env, ctx, z3.And(pc, guard), returned, retval)
         for name in written:
             cur[name] = _merge(guard, after[name], cur[name], ctx.w)
 
@@ -189,10 +209,10 @@ def _unroll_for(loop: ir.For, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> _Env:
     end = start + z3.BitVecVal(ctx.bound, ctx.w)
     in_bound = z3.And(start <= end, start <= stop, stop <= end)
     ctx.assumptions.append(z3.Implies(pc, in_bound))
-    return cur
+    return cur, returned, retval
 
 
-def _unroll_foreach(loop: ir.ForEach, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> _Env:
+def _unroll_foreach(loop: ir.ForEach, env: _Env, ctx: _Ctx, pc, returned, retval):
     ctx.unrolled = True
     seq = _eval(loop.iterable, env, ctx, pc)
     if not isinstance(seq, SymList):
@@ -206,10 +226,10 @@ def _unroll_foreach(loop: ir.ForEach, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> _
         guard = z3.BitVecVal(k, ctx.w) < seq.length  # iteration k runs iff k < len
         body_env = dict(cur)
         body_env[loop.var] = z3.Select(seq.arr, z3.BitVecVal(k, ctx.w))
-        after = _exec_block_env(loop.body, body_env, ctx, z3.And(pc, guard))
+        after, returned, retval = _exec_seq(loop.body, body_env, ctx, z3.And(pc, guard), returned, retval)
         for name in written:
             cur[name] = _merge(guard, after[name], cur[name], ctx.w)
-    return cur
+    return cur, returned, retval
 
 
 def _require_initialized(loop, env: _Env) -> set[str]:
@@ -222,26 +242,6 @@ def _require_initialized(loop, env: _Env) -> set[str]:
             f"variable(s) {sorted(missing)} assigned in a loop but not initialized before it"
         )
     return written
-
-
-def _exec_block_env(stmts, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> _Env:
-    """Execute a return-free block as an environment transformer."""
-    cur = dict(env)
-    for stmt in stmts:
-        if isinstance(stmt, ir.Assign):
-            cur[stmt.target] = _eval(stmt.value, cur, ctx, pc)
-        elif isinstance(stmt, ir.If):
-            cond = _as_bool(_eval(stmt.test, cur, ctx, pc))
-            then_env = _exec_block_env(stmt.body, cur, ctx, z3.And(pc, cond))
-            else_env = _exec_block_env(stmt.orelse, cur, ctx, z3.And(pc, z3.Not(cond)))
-            for name in _assigned_names(stmt.body) | _assigned_names(stmt.orelse):
-                cur[name] = _merge(cond, then_env[name], else_env[name], ctx.w)
-        elif isinstance(stmt, ir.For):
-            cur = _unroll_for(stmt, cur, ctx, pc)
-        elif isinstance(stmt, ir.ForEach):
-            cur = _unroll_foreach(stmt, cur, ctx, pc)
-        else:  # ir.Return — blocked by the parser, but guard anyway
-            raise UnsupportedForProof("`return` inside a loop is not supported")
     return cur
 
 

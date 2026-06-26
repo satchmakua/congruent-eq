@@ -14,14 +14,14 @@ Supported subset (v1):
     - comparisons: < <= > >= == !=   (including chained: a < b < c)
     - boolean logic: and / or / not
     - integer and boolean literals
-    - `for <var> in range(...)` bounded loops (no `return` inside the loop)
+    - `for <var> in range(...)` bounded loops, with `return` allowed inside
     - `list[int]` inputs: `len(xs)`, `xs[i]` (read), `for x in xs` iteration
 
 Out of scope (raise `UnsupportedConstruct` loudly — never ignored):
     while, recursion-via-call, floats, strings, I/O, global mutation,
     list/attribute/subscript *assignment*, list *outputs*, comprehensions,
-    exceptions, `return`/`break`/`continue` inside a loop. Refusing to model a
-    construct is what keeps verdicts honest.
+    exceptions, `break`/`continue`. Refusing to model a construct is what keeps
+    verdicts honest.
 """
 
 from __future__ import annotations
@@ -332,10 +332,7 @@ def _lower_for(node: ast.For) -> Stmt:
     if not isinstance(node.target, ast.Name):
         raise UnsupportedConstruct("loop target must be a single name")
 
-    body = _lower_block(node.body)
-    if _contains_return(body):
-        raise UnsupportedConstruct("`return` inside a loop is not supported yet")
-
+    body = _lower_block(node.body)  # `return` inside the loop is allowed
     it = node.iter
     if isinstance(it, ast.Call) and isinstance(it.func, ast.Name) and it.func.id == "range":
         if it.keywords or not 1 <= len(it.args) <= 2:
@@ -350,17 +347,6 @@ def _lower_for(node: ast.For) -> Stmt:
 
     # Otherwise iterate an expression (expected to be a list[int]).
     return ForEach(node.target.id, _lower_expr(it), body)
-
-
-def _contains_return(stmts: tuple[Stmt, ...]) -> bool:
-    for stmt in stmts:
-        if isinstance(stmt, Return):
-            return True
-        if isinstance(stmt, If) and (_contains_return(stmt.body) or _contains_return(stmt.orelse)):
-            return True
-        if isinstance(stmt, (For, ForEach)) and _contains_return(stmt.body):
-            return True
-    return False
 
 
 def _lower_expr(node: ast.expr) -> Expr:

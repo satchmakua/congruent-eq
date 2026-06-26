@@ -1,59 +1,85 @@
 # Roadmap
 
-Congruent ships publicly between **M1 and M3** — the honest, bounded tool is the product. Completeness is not the goal; a trustworthy verdict-or-counterexample is.
+Congruent ships publicly once the demo lands (M3) — the honest, bounded tool is
+the product, not completeness. A trustworthy verdict-or-counterexample is the bar.
 
-## Milestones
+**Legend:** ✅ done · 🔜 next · ⬜ planned
+
+---
+
+## Done
 
 ### M0 — Walking skeleton ✅
-CLI parses two functions; Stage-1 differential tester only; produces a `Verdict` and a formatted report. Runs end-to-end on the difftest path.
+Parse → fixed-width concrete interpreter → differential tester → `Verdict` → CLI
+(exit codes 0/1/2). The pipeline runs end to end on the difftest path.
 
-- [x] Repo layout, packaging, CI scaffold
-- [x] `Verdict` / `Counterexample` data model
-- [x] `ir.parse_function` for the v1 Python subset (loud `UnsupportedConstruct`)
-- [x] Fixed-width (two's-complement) concrete interpreter over the IR
-- [x] `difftest` random + boundary generation from a typed signature
-- [x] `cli` wires parse → difftest → report (exit codes 0/1/2)
-- [x] Fixtures: two counterexample pairs, two equivalent pairs
+### M1 — Symbolic core ✅ *(credibility milestone)*
+A from-scratch symbolic interpreter lowers each function to a Z3 bitvector
+expression (continuation-passing path merge; early returns at top level).
+`solver` asserts the outputs can differ: `UNSAT → EQUIVALENT`, `SAT →
+COUNTEREXAMPLE` (model decoded to concrete inputs), else `UNKNOWN`. Python-faithful
+floor `//`/`%`; sound `UNKNOWN` fallback for anything not yet modeled.
 
-### M1 — Symbolic core *(credibility milestone)* ✅
-Integer/bool arithmetic + branches lowered to Z3; `UNSAT`/`SAT` → verdict; decode SAT models back to concrete counterexamples.
+### M2 — Bounded loops, preconditions, arrays ✅
+- `for ... in range(...)` and `for x in xs` — unrolled to `--bound` with bounded
+  model checking (a non-wrapping in-bound assumption ⇒ honest "up to bound N").
+- `assume(<expr>)` preconditions (inline + CLI `--assume`), honored by both stages.
+- `list[int]` inputs as bounded Z3 arrays: `len(xs)`, iteration, and `xs[i]`.
+- Runtime errors modeled as path-condition-guarded conditions: out-of-bounds
+  `xs[i]` and divide-by-zero. Equivalence requires matching error behavior, so
+  these are *proven*, not punted — no "assume in-bounds" caveat.
 
-- [x] `symbolic` interpreter over the IR subset → Z3 expressions (continuation-passing path merge; early returns supported)
-- [x] `solver` builds `(outputs differ)` over shared symbolic inputs and solves
-- [x] Model decoding → `Counterexample`
-- [x] Fixed-width (bitvector) integer model — Python-faithful floor `//`/`%`
-- [x] `equiv` escalation: difftest → symbolic, with sound fallback to UNKNOWN
+### M3 — Demo & benchmarks ✅ *(the "ship it" milestone)*
+- Recall benchmark with a zero-unsound-verdicts gate (`benchmarks/bench_recall.py`).
+- Timing-vs-bound benchmark (`benchmarks/bench_scaling.py`).
+- Eval set spanning truly-equivalent **and** subtly-broken pairs.
+- `examples/` gallery of realistic AI-refactor pairs + `run_gallery.py`, pinned by
+  `tests/test_examples.py`.
+- A committed terminal-style demo image (`docs/demo.svg`) leading the README.
 
-(M2 later modeled divide-by-zero and out-of-bounds access as guarded runtime errors, removing the earlier UNKNOWN fallbacks for those.)
+---
 
-### M2 — Bounded loops + arrays *(in progress)*
-- [x] `for ... in range(...)` loops: unroll to depth `bound`, report the bound
-- [x] Bounded model checking: in-bound assumption (loop trip count ≤ bound), so loop verdicts read "EQUIVALENT up to bound N"
-- [x] Concrete interpreter caps loops at `bound` (difftest stays in the same domain)
-- [x] Input preconditions: leading `assume(<expr>)` statements + CLI `--assume`, honored by both stages
-- [x] `list[int]` inputs: bounded-length symbolic arrays, `len(xs)`, `for x in xs` iteration
-- [x] `xs[i]` indexing in *proofs* — out-of-bounds modeled as a guarded runtime error (path-condition aware)
-- [x] Division/modulo by a non-constant divisor — divide-by-zero modeled as a guarded runtime error
-- [ ] `return` / `break` / `continue` inside loops
-- [ ] List *outputs* (functions that build/return a list)
-- [ ] Optionally bounded strings
+## Next up (ordered)
 
-### M3 — Demo + benchmarks *(in progress)*
-- [x] Recall benchmark over the eval set with a zero-unsound-verdicts gate (`benchmarks/bench_recall.py`)
-- [x] Timing-vs-bound benchmark (`benchmarks/bench_scaling.py`)
-- [x] Eval set spanning truly-equivalent **and** subtly-broken pairs (off-by-one, overflow, loop/array bugs)
-- [ ] README demo image showing a caught bug (the midpoint-overflow case)
-- [ ] Curated gallery of real AI-refactor pairs (beyond the unit fixtures)
+### M4 — Early exit in loops ✅ *(`return` done; `break`/`continue` deferred)*
+- Unified the symbolic interpreter into one state-threading pass carrying
+  `(env, returned, return_value)`, so a `return` works *anywhere* — including
+  inside a loop. Falling off the end without returning is folded into the error
+  condition (Python would return None), which also removed an old `UnsupportedForProof`.
+- Search now verifies: `contains` (early-return vs flag, EQ), `all_positive`
+  (short-circuit, EQ), find-first off-by-one (CX).
+- **Remaining:** `break` / `continue` (still rejected by the parser) — they need
+  per-loop `broken` / per-iteration `continued` guards threaded like `returned`.
 
-### M4 — Stretch
-- [ ] C subset
-- [ ] LLM-suggested refactors auto-checked
-- [ ] Counterexample minimization (shrink to smallest failing input)
-- [ ] Pluggable solver backend (CVC5) behind the `solver` abstraction
+### M5 — Counterexample minimization 🔜
+**Goal:** report the *smallest* failing input, so a counterexample reads as a
+crisp bug, not a random blob.
+- After a SAT result, minimize a cost (list length, then `|int|` of each input)
+  via `z3.Optimize` or iterative re-querying under the difference constraint.
+- Surface via `--minimize` (default on); note it in the verdict.
+
+**Done when:** counterexamples are minimal (shortest list / smallest-magnitude
+ints) on the eval set; a test asserts a known case shrinks to the expected input.
+
+### M6 — List outputs ⬜
+**Goal:** verify functions that *build and return* a `list[int]` (map/filter/transform).
+- A list-construction mechanism (`result = result + [x]` / append) in IR + both
+  interpreters; bounded output lists.
+- Output equivalence = equal length ∧ element-wise equal within bound.
+
+**Done when:** a map/filter refactor (e.g. doubling, or dropping non-positives)
+proves EQUIVALENT and a subtly-broken one yields a counterexample.
+
+### M7 — Reach & robustness ⬜
+- Pluggable CVC5 backend behind the `solver` abstraction (cross-check verdicts).
+- Bounded strings (as bounded `list[int]` of code points, or a dedicated sort).
+- *(Stretch)* C-subset front end; auto-check LLM-suggested refactors.
+
+---
 
 ## Out of scope for v1 → future work
 
-These are stated plainly in the README as current limitations. They are roadmap, not failure:
+Stated plainly in the README as current limitations — roadmap, not failure:
 
 - Unbounded loops / recursion without a bound
 - Floating-point exactness

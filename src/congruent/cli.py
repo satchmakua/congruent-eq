@@ -52,6 +52,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--assume", action="append", metavar="EXPR", default=[],
         help="precondition on the inputs, e.g. --assume 'n >= 0' (repeatable)",
     )
+    parser.add_argument(
+        "--no-minimize", dest="minimize", action="store_false",
+        help="report the first counterexample found, not the smallest",
+    )
     return parser
 
 
@@ -73,7 +77,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"congruent: cannot parse input: {exc}", file=sys.stderr)
         return 2
 
-    verdict = check(original, candidate, bound=args.bound, int_width=args.int_width)
+    verdict = check(
+        original, candidate, bound=args.bound, int_width=args.int_width, minimize=args.minimize
+    )
     print(format_verdict(verdict))
     return {
         Status.EQUIVALENT: 0,

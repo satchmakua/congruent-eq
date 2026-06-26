@@ -6,6 +6,8 @@ Coding agents refactor, migrate, and "optimize" code constantly. The honest answ
 
 It's equivalence checking (the EDA/formal-methods kind) pointed at the problem of trusting AI-generated code.
 
+![Congruent catching a midpoint-overflow bug in an AI refactor](docs/demo.svg)
+
 ---
 
 ## Scope (read this first)
@@ -121,16 +123,17 @@ EQUIVALENT  (stage: symbolic, 0.00s)
   note: holds within bound: lists up to length 8, loops up to 8 iterations
 ```
 
-> **Status: M0–M2 core complete.** The differential stage catches counterexamples
+> **Status: M0–M4 complete.** The differential stage catches counterexamples
 > (overflow included) under a fixed-width integer model; the symbolic stage lowers
 > both functions to Z3 bitvector expressions and returns `EQUIVALENT` (UNSAT), a
 > `COUNTEREXAMPLE` (SAT, decoded to concrete inputs), or `UNKNOWN`. Supported:
 > ints/bools, branches, `for ... in range(...)` and `for x in xs` loops (bounded
-> model checking), `assume(...)` preconditions, and bounded `list[int]` inputs
-> with `len`, iteration, and `xs[i]` indexing. Out-of-bounds access and
-> divide-by-zero are modeled as runtime errors (a rewrite that crashes where the
-> original didn't is a counterexample). Benchmarks pass with zero unsound
-> verdicts. See [ROADMAP.md](ROADMAP.md).
+> model checking) with early `return`, `assume(...)` preconditions, and bounded
+> `list[int]` inputs with `len`, iteration, and `xs[i]` indexing. Out-of-bounds
+> access and divide-by-zero are modeled as runtime errors (a rewrite that crashes
+> where the original didn't is a counterexample). Benchmarks pass with zero
+> unsound verdicts. Next: counterexample minimization (M5). See
+> [ROADMAP.md](ROADMAP.md).
 
 ---
 
@@ -170,7 +173,19 @@ src/congruent/
 tests/
   fixtures/     # equivalent + non-equivalent pairs (the eval set)
   test_equiv.py
+examples/       # gallery of realistic AI-refactor pairs + run_gallery.py
 benchmarks/     # timing vs bound; recall on known pairs
+docs/demo.svg   # the README demo image
+```
+
+## Gallery
+
+[`examples/`](examples/) holds realistic AI-refactor pairs — faithful rewrites
+and subtly broken ones — with Congruent's verdict on each (binary-search
+midpoint, clamping, list maximum, sum-to-n, counting). Run them all:
+
+```bash
+python examples/run_gallery.py
 ```
 
 ## Benchmarks
