@@ -94,7 +94,7 @@ def check(
             assumptions=[f"signatures differ: original {orig_types} vs candidate {cand_types}"],
         )
 
-    # Stage 1 — differential testing.
+    # Stage 1 — differential testing (cheap; finds obvious counterexamples).
     cx = find_counterexample(
         original, candidate, bound=bound, int_width=int_width, trials=trials, seed=seed
     )
@@ -107,12 +107,25 @@ def check(
             assumptions=assumptions,
         )
 
-    # TODO(M1): escalate to the symbolic stage; UNSAT -> EQUIVALENT, SAT -> CX.
-    return Verdict(
-        status=Status.UNKNOWN,
-        bound=bound,
-        stage="difftest",
-        assumptions=assumptions
-        + ["no counterexample found by differential testing; "
-           "equivalence not proven (symbolic stage lands in M1 — see ROADMAP.md)"],
-    )
+    # Stage 2 — symbolic execution + SMT. This is the stage that can return
+    # EQUIVALENT (UNSAT). If it can't soundly model the functions, fall back to
+    # the honest UNKNOWN rather than risk a false proof.
+    fallback_note = "no counterexample found by differential testing; equivalence not proven"
+    try:
+        from congruent.solver import prove_equivalence
+        from congruent.symbolic import UnsupportedForProof
+    except ImportError:
+        return Verdict(
+            status=Status.UNKNOWN, bound=bound, stage="difftest",
+            assumptions=assumptions + [f"{fallback_note} (z3 not installed; symbolic stage skipped)"],
+        )
+
+    try:
+        return prove_equivalence(
+            original, candidate, bound=bound, int_width=int_width, assumptions=assumptions
+        )
+    except UnsupportedForProof as exc:
+        return Verdict(
+            status=Status.UNKNOWN, bound=bound, stage="difftest",
+            assumptions=assumptions + [f"{fallback_note} (symbolic stage declined: {exc})"],
+        )

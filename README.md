@@ -22,9 +22,9 @@ The credibility of this tool is its honesty about what it does and doesn't do. v
 
 Verdicts:
 
-- **`EQUIVALENT up to bound N`** — no diverging input exists within the bound *(requires the symbolic stage — M1)*.
+- **`EQUIVALENT up to bound N`** — no diverging input exists within the bound (proven by the symbolic stage; for the current loop-free subset this is complete over all inputs at the chosen width).
 - **`COUNTEREXAMPLE: <input>`** — a concrete input where the two functions disagree, with both outputs.
-- **`UNKNOWN`** — no counterexample found, but equivalence not proven (e.g. M0, before the symbolic stage exists). Never silently upgraded to `EQUIVALENT`.
+- **`UNKNOWN`** — no counterexample found, but equivalence not proven (e.g. the symbolic stage declined to model something — see below). Never silently upgraded to `EQUIVALENT`.
 
 Congruent never claims unconditional soundness. Every verdict carries its bound and assumptions.
 
@@ -67,7 +67,7 @@ def mid(lo: int, hi: int) -> int:
     return (lo + hi) // 2
 ```
 
-Congruent catches it today (M0, differential stage):
+Congruent catches it:
 
 ```console
 $ congruent original.py:mid candidate.py:mid --bound 8 --int-width 32
@@ -78,14 +78,24 @@ COUNTEREXAMPLE  (stage: difftest)
   note: 32-bit two's-complement integers
 ```
 
+And it *proves* the honest rewrites correct — distributivity over modular arithmetic, here, via Z3:
+
+```console
+$ congruent original.py:f candidate.py:g          # (x+y)*2  vs  x*2 + y*2
+EQUIVALENT  (stage: symbolic, 0.00s)
+  equivalent up to bound 8
+  note: 32-bit two's-complement integers
+  note: complete: agree on all 32-bit inputs (no loops to bound)
+```
+
 One screenshot of *proof-or-counterexample on a real AI refactor* communicates the whole value.
 
-> **Status: M0 (walking skeleton) is live.** The differential stage parses the
-> Python subset, evaluates both functions under a fixed-width integer model, and
-> returns concrete counterexamples — overflow bugs included. What it *cannot* yet
-> do is return `EQUIVALENT`: proving the *absence* of a counterexample needs the
-> symbolic/SMT stage (M1), so equivalent pairs currently report `UNKNOWN`. See
-> [ROADMAP.md](ROADMAP.md).
+> **Status: M0 + M1 are live.** The differential stage catches counterexamples
+> (overflow included) under a fixed-width integer model; the symbolic stage
+> lowers both functions to Z3 bitvector expressions and returns `EQUIVALENT`
+> (UNSAT), a `COUNTEREXAMPLE` (SAT, decoded to concrete inputs), or `UNKNOWN`.
+> Current scope is loop-free functions over ints/bools — loops and arrays are
+> M2. See [ROADMAP.md](ROADMAP.md).
 
 ---
 

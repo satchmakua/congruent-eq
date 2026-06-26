@@ -87,7 +87,9 @@ def test_equivalent_fixtures_not_falsely_disproven(name: str) -> None:
     assert _verdict_for(name).status is not Status.COUNTEREXAMPLE
 
 
-@pytest.mark.xfail(reason="equivalence proofs land in M1 (symbolic stage)", strict=True)
 @pytest.mark.parametrize("name", _names_with("EQUIVALENT"))
 def test_equivalent_fixtures_are_proven(name: str) -> None:
-    assert _verdict_for(name).status is Status.EQUIVALENT
+    # M1: the symbolic stage proves equivalent pairs (UNSAT).
+    verdict = _verdict_for(name)
+    assert verdict.status is Status.EQUIVALENT
+    assert verdict.stage == "symbolic"

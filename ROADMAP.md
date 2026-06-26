@@ -15,14 +15,16 @@ CLI parses two functions; Stage-1 differential tester only; produces a `Verdict`
 - [x] `cli` wires parse → difftest → report (exit codes 0/1/2)
 - [x] Fixtures: two counterexample pairs, two equivalent pairs
 
-### M1 — Symbolic core *(credibility milestone)*
+### M1 — Symbolic core *(credibility milestone)* ✅
 Integer/bool arithmetic + branches lowered to Z3; `UNSAT`/`SAT` → verdict; decode SAT models back to concrete counterexamples.
 
-- [ ] `symbolic` interpreter over the IR subset → Z3 expressions
-- [ ] `solver` builds `(inputs equal) ∧ (outputs differ)` and solves
-- [ ] Model decoding → `Counterexample`
-- [ ] Fixed-width (bitvector) integer model — catches overflow
-- [ ] `equiv` escalation: difftest → symbolic
+- [x] `symbolic` interpreter over the IR subset → Z3 expressions (continuation-passing path merge; early returns supported)
+- [x] `solver` builds `(outputs differ)` over shared symbolic inputs and solves
+- [x] Model decoding → `Counterexample`
+- [x] Fixed-width (bitvector) integer model — Python-faithful floor `//`/`%`
+- [x] `equiv` escalation: difftest → symbolic, with sound fallback to UNKNOWN
+
+Known M1 limitations (not false proofs — they fall back to UNKNOWN): division/modulo by a non-constant or zero divisor isn't modeled; list params aren't symbolic yet.
 
 ### M2 — Bounded loops + arrays
 - [ ] Unroll loops/recursion to depth `k`; report the bound

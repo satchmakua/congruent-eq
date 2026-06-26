@@ -1,53 +1,114 @@
-"""Solver abstraction: build the equivalence query, solve, decode the model.
+"""Solver layer: build the equivalence query, solve, decode the model.
 
-Given two `FunctionSummary` objects, assert that the functions receive *equal
-inputs* yet produce *different outputs*, and ask the solver:
+Summarize both functions over the *same* fresh symbolic inputs, then ask Z3
+whether their outputs can differ:
 
-    UNSAT -> no diverging input exists within the bound -> EQUIVALENT
+    UNSAT -> no diverging input exists within the model -> EQUIVALENT
     SAT   -> the model IS a counterexample -> decode back to concrete inputs
+    unknown -> solver gave up -> UNKNOWN
 
-Z3 is the v1 backend. Everything solver-specific is funneled through this
-module so a CVC5 (or other) backend can slot in behind the same interface
-later (ROADMAP.md M4).
+Z3 is the v1 backend; everything solver-specific lives here so a different
+backend can slot in behind `prove_equivalence` later (ROADMAP.md M4).
 """
 
 from __future__ import annotations
 
-from congruent.equiv import Counterexample, Verdict
-from congruent.symbolic import FunctionSummary
+import time
+
+import z3
+
+from congruent import symbolic
+from congruent.equiv import Counterexample, Status, Verdict
+from congruent.ir import Function
 
 
 def prove_equivalence(
-    original: FunctionSummary,
-    candidate: FunctionSummary,
+    original: Function,
+    candidate: Function,
     *,
     bound: int,
-    assumptions: list[str] | None = None,
+    int_width: int,
+    assumptions: list[str],
 ) -> Verdict:
-    """Build and solve the equivalence query for two function summaries.
+    """Run the symbolic equivalence query for two (signature-matched) functions.
 
-    Args:
-        original: symbolic summary of the reference function.
-        candidate: symbolic summary of the rewritten function.
-        bound: the bound this verdict holds up to (recorded on the result).
-        assumptions: human-readable caveats to attach (e.g. integer width).
-
-    Returns:
-        A `Verdict`:
-            - `EQUIVALENT`     when the query is UNSAT,
-            - `COUNTEREXAMPLE` when SAT (model decoded via `_decode_model`),
-            - `UNKNOWN`        when the solver times out or returns unknown.
+    Raises:
+        symbolic.UnsupportedForProof: a function uses something the symbolic
+            stage cannot soundly model; the caller should fall back to the
+            differential verdict rather than guess.
     """
-    # TODO(M1): equate inputs; assert outputs differ across path pairs.
-    # TODO(M1): solver.check(); on sat -> _decode_model; on unsat -> EQUIVALENT.
-    raise NotImplementedError("solver query not yet implemented — see ROADMAP.md (M1)")
+    inputs = symbolic.make_input_symbols(original.params, int_width)
+    out_original = symbolic.summarize(original, inputs, int_width)
+    out_candidate = symbolic.summarize(candidate, inputs, int_width)
+
+    solver = z3.Solver()
+    solver.add(_differ(out_original, out_candidate, int_width))
+
+    start = time.perf_counter()
+    result = solver.check()
+    elapsed = time.perf_counter() - start
+
+    if result == z3.unsat:
+        # The M1 subset is loop-free, so the summary is exact: UNSAT means the
+        # outputs agree on *every* input at this width, not just within a bound.
+        return Verdict(
+            status=Status.EQUIVALENT,
+            bound=bound,
+            solver_time=elapsed,
+            stage="symbolic",
+            assumptions=assumptions + [f"complete: agree on all {int_width}-bit inputs (no loops to bound)"],
+        )
+
+    if result == z3.sat:
+        model = solver.model()
+        cx = _decode_model(model, inputs, original.params, out_original, out_candidate)
+        return Verdict(
+            status=Status.COUNTEREXAMPLE,
+            bound=bound,
+            counterexample=cx,
+            solver_time=elapsed,
+            stage="symbolic",
+            assumptions=assumptions,
+        )
+
+    return Verdict(
+        status=Status.UNKNOWN,
+        bound=bound,
+        solver_time=elapsed,
+        stage="symbolic",
+        assumptions=assumptions + [f"solver returned unknown: {solver.reason_unknown()}"],
+    )
 
 
-def _decode_model(model: object, inputs: dict[str, object]) -> Counterexample:
-    """Turn a satisfying Z3 model into a concrete `Counterexample`.
+def _differ(a: z3.ExprRef, b: z3.ExprRef, int_width: int) -> z3.ExprRef:
+    """Assertion that the two outputs disagree, coercing to a common sort."""
+    if z3.is_bool(a) and z3.is_bool(b):
+        return a != b
+    return symbolic._as_bv(a, int_width) != symbolic._as_bv(b, int_width)
 
-    Reads each input symbol's value out of the model and converts it back to a
-    plain Python value (bitvector -> signed int, etc.).
-    """
-    # TODO(M1): evaluate each input symbol in the model -> Python value.
-    raise NotImplementedError("model decoding not yet implemented — see ROADMAP.md (M1)")
+
+def _decode_model(
+    model: z3.ModelRef,
+    inputs: list[z3.ExprRef],
+    params: list,
+    out_original: z3.ExprRef,
+    out_candidate: z3.ExprRef,
+) -> Counterexample:
+    """Turn a satisfying model into a concrete `Counterexample`."""
+    concrete = {
+        param.name: _to_py(model.eval(sym, model_completion=True))
+        for param, sym in zip(params, inputs)
+    }
+    return Counterexample(
+        inputs=concrete,
+        original_output=_to_py(model.eval(out_original, model_completion=True)),
+        candidate_output=_to_py(model.eval(out_candidate, model_completion=True)),
+    )
+
+
+def _to_py(value: z3.ExprRef) -> object:
+    if z3.is_bool(value):
+        return z3.is_true(value)
+    if z3.is_bv_value(value):
+        return value.as_signed_long()
+    return value  # pragma: no cover — unexpected sort, surface it as-is
