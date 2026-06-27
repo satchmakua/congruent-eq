@@ -68,12 +68,29 @@ floor `//`/`%`; sound `UNKNOWN` fallback for anything not yet modeled.
 - map (`x*2` vs `x+x`) and filter rewrites prove EQUIVALENT; off-by-one map /
   `>`-vs-`>=` filter / non-commutative concat yield counterexamples.
 
-### M7 — Reach & robustness *(in progress)*
+### M7 — Reach & robustness ✅ *(core; stretch items remain)*
 - [x] `break` / `continue` inside loops — each loop owns a `broken` (accumulates,
       stops the loop) and a per-iteration `continued`, threaded like `returned`.
-- [ ] Pluggable CVC5 backend behind the `solver` abstraction (cross-check verdicts).
-- [ ] Bounded strings (as bounded `list[int]` of code points, or a dedicated sort).
-- [ ] *(Stretch)* C-subset front end; auto-check LLM-suggested refactors.
+- [x] CVC5 cross-check backend — Z3 stays primary; CVC5 independently re-decides
+      the same query (handed over as SMT-LIB2) under `--cross-check`. A
+      disagreement downgrades the verdict to UNKNOWN. (`backends.py`)
+- [x] Bounded strings — `str` modeled as a bounded sequence of code points
+      (a character is a length-1 string), reusing the `SymList` machinery via a
+      `kind` tag. Literals, `len`, `==`/`!=`, `+`, indexing, and iteration.
+- [x] **C-subset front end** (`cfront.py`, via `pycparser`) — check C function
+      pairs against the same engine. C's fixed-width `int` fits the bitvector
+      model directly; C truncating `/`/`%` lower to dedicated IR ops. The CLI
+      dispatches on the `.c` extension.
+- [ ] *(Stretch)* auto-check LLM-suggested refactors (closed loop: AI proposes,
+      Congruent verifies). Needs the Anthropic API, so it can't run offline.
+
+---
+
+## Where to go next
+
+The honest bounded equivalence checker now covers a substantial Python subset
+(plus a C front end) end to end. The only remaining item is the LLM closed-loop
+demo, which needs network/API access — the v1 product is here.
 
 ---
 

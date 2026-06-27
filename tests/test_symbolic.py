@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from congruent import check
 from congruent.equiv import Status
 from congruent.ir import parse_function

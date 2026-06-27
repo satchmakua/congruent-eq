@@ -17,7 +17,7 @@ import time
 
 import z3
 
-from congruent import symbolic
+from congruent import backends, symbolic
 from congruent.equiv import Counterexample, Status, Verdict
 from congruent.ir import Function
 
@@ -30,11 +30,13 @@ def prove_equivalence(
     int_width: int,
     assumptions: list[str],
     minimize: bool = True,
+    cross_check: bool = False,
 ) -> Verdict:
     """Run the symbolic equivalence query for two (signature-matched) functions.
 
     `UNSAT → EQUIVALENT`, `SAT → COUNTEREXAMPLE` (minimized when `minimize`),
-    else `UNKNOWN`.
+    else `UNKNOWN`. With `cross_check`, CVC5 independently re-decides the query;
+    a disagreement downgrades the verdict to `UNKNOWN`.
 
     Raises:
         symbolic.UnsupportedForProof: a function uses something the symbolic
@@ -52,6 +54,22 @@ def prove_equivalence(
     start = time.perf_counter()
     result = solver.check()
 
+    extra = list(assumptions)
+    if cross_check:
+        z3_status = "unsat" if result == z3.unsat else "sat" if result == z3.sat else "unknown"
+        other = backends.cvc5_decide(constraints)
+        if other is None:
+            extra.append("cross-check requested but cvc5 is not installed")
+        elif other != z3_status:
+            elapsed = time.perf_counter() - start
+            return Verdict(
+                status=Status.UNKNOWN, bound=bound, solver_time=elapsed, stage="symbolic",
+                assumptions=assumptions
+                + [f"solver backends disagree (z3={z3_status}, cvc5={other}) — please report"],
+            )
+        else:
+            extra.append("cross-checked with cvc5 (agrees)")
+
     if result == z3.unsat:
         elapsed = time.perf_counter() - start
         return Verdict(
@@ -59,7 +77,7 @@ def prove_equivalence(
             bound=bound,
             solver_time=elapsed,
             stage="symbolic",
-            assumptions=assumptions + [_scope_note(original, candidate, summary_o, summary_c, int_width, bound)],
+            assumptions=extra + [_scope_note(original, candidate, summary_o, summary_c, int_width, bound)],
         )
 
     if result == z3.unknown:
@@ -69,12 +87,12 @@ def prove_equivalence(
             bound=bound,
             solver_time=elapsed,
             stage="symbolic",
-            assumptions=assumptions + [f"solver returned unknown: {solver.reason_unknown()}"],
+            assumptions=extra + [f"solver returned unknown: {solver.reason_unknown()}"],
         )
 
     # SAT — a counterexample exists. Optionally shrink it to the smallest input.
     model = solver.model()
-    notes = list(assumptions)
+    notes = list(extra)
     if minimize:
         minimal = _minimize(constraints, inputs, int_width)
         if minimal is not None:
@@ -167,9 +185,10 @@ def _minimize(constraints, inputs, int_width) -> z3.ModelRef | None:
 
 def _scope_note(original, candidate, summary_o, summary_c, int_width, bound) -> str:
     bounded_bits = []
-    list_io = any(p.type_name == "list[int]" for p in original.params) or original.return_type == "list[int]"
-    if list_io:
-        bounded_bits.append(f"lists up to length {bound}")
+    seq_types = {"list[int]", "str"}
+    seq_io = any(p.type_name in seq_types for p in original.params) or original.return_type in seq_types
+    if seq_io:
+        bounded_bits.append(f"lists/strings up to length {bound}")
     if summary_o.unrolled or summary_c.unrolled:
         bounded_bits.append(f"loops up to {bound} iterations")
     if bounded_bits:
@@ -203,8 +222,8 @@ def _decode_model(
     model: z3.ModelRef,
     inputs: list,
     params: list,
-    summary_original: "symbolic.Summary",
-    summary_candidate: "symbolic.Summary",
+    summary_original: symbolic.Summary,
+    summary_candidate: symbolic.Summary,
     int_width: int,
     bound: int,
 ) -> Counterexample:
@@ -212,12 +231,7 @@ def _decode_model(
     concrete: dict[str, object] = {}
     for param, value in zip(params, inputs):
         if isinstance(value, symbolic.SymList):
-            length = int(_to_py(model.eval(value.length, model_completion=True)))
-            length = max(0, min(length, bound))
-            concrete[param.name] = [
-                _to_py(model.eval(z3.Select(value.arr, z3.BitVecVal(i, int_width)), model_completion=True))
-                for i in range(length)
-            ]
+            concrete[param.name] = _decode_seq(model, value, int_width, bound)
         else:
             concrete[param.name] = _to_py(model.eval(value, model_completion=True))
     return Counterexample(
@@ -227,22 +241,30 @@ def _decode_model(
     )
 
 
-def _decode_output(model: z3.ModelRef, summary: "symbolic.Summary", int_width: int, bound: int) -> object:
-    """A function's observable result in the model: a value, a list, or a raised error."""
+def _decode_seq(model: z3.ModelRef, sym: symbolic.SymList, int_width: int, bound: int) -> object:
+    """Decode a SymList model value: a `str` (kind char) or a `list[int]`."""
+    length = int(_to_py(model.eval(sym.length, model_completion=True)))
+    length = max(0, min(length, bound))
+    elements = [
+        int(_to_py(model.eval(z3.Select(sym.arr, z3.BitVecVal(k, int_width)), model_completion=True)))
+        for k in range(length)
+    ]
+    if sym.kind == "char":
+        return "".join(chr(e) if 0 <= e <= 0x10FFFF else "�" for e in elements)
+    return elements
+
+
+def _decode_output(model: z3.ModelRef, summary: symbolic.Summary, int_width: int, bound: int) -> object:
+    """A function's observable result in the model: a value, a sequence, or a raised error."""
     if z3.is_true(model.eval(summary.error, model_completion=True)):
         return "<raises>"
     out = summary.output
     if isinstance(out, symbolic.SymList):
-        length = int(_to_py(model.eval(out.length, model_completion=True)))
-        length = max(0, min(length, bound))
-        return [
-            _to_py(model.eval(z3.Select(out.arr, z3.BitVecVal(k, int_width)), model_completion=True))
-            for k in range(length)
-        ]
+        return _decode_seq(model, out, int_width, bound)
     return _to_py(model.eval(out, model_completion=True))
 
 
-def _to_py(value: z3.ExprRef) -> object:
+def _to_py(value):  # -> Any: a decoded model value (bool / signed int)
     if z3.is_bool(value):
         return z3.is_true(value)
     if z3.is_bv_value(value):

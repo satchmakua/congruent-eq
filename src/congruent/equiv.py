@@ -65,6 +65,7 @@ def check(
     trials: int = 2000,
     seed: int = 0,
     minimize: bool = True,
+    cross_check: bool = False,
 ) -> Verdict:
     """Decide behavioral equivalence of two functions up to `bound`.
 
@@ -140,7 +141,8 @@ def check(
     try:
         return prove_equivalence(
             original, candidate,
-            bound=bound, int_width=int_width, assumptions=assumptions, minimize=minimize,
+            bound=bound, int_width=int_width, assumptions=assumptions,
+            minimize=minimize, cross_check=cross_check,
         )
     except UnsupportedForProof as exc:
         return unknown(f"symbolic stage declined: {exc}")

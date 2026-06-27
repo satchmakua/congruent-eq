@@ -29,7 +29,7 @@ def test_array_verdict_reports_length_bound() -> None:
     a = "def f(xs: list[int]) -> int:\n    return len(xs)"
     b = "def g(xs: list[int]) -> int:\n    c = 0\n    for x in xs:\n        c = c + 1\n    return c"
     verdict = _check(a, b, bound=5)
-    assert any("lists up to length 5" in note for note in verdict.assumptions)
+    assert any("length 5" in note for note in verdict.assumptions)
 
 
 def test_count_off_by_one_is_a_counterexample() -> None:

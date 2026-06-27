@@ -61,8 +61,8 @@ def test_verdict_model() -> None:
 @pytest.mark.parametrize("name", _fixture_names())
 def test_fixture_is_well_formed(name: str) -> None:
     mod = _load_fixture(name)
-    assert callable(getattr(mod, "original"))
-    assert callable(getattr(mod, "candidate"))
+    assert callable(mod.original)
+    assert callable(mod.candidate)
     assert mod.EXPECTED in {"EQUIVALENT", "COUNTEREXAMPLE"}
 
 

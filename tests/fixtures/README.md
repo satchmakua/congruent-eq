@@ -15,10 +15,10 @@ A fixture module defines:
 - `NOTE` — one line on what the pair exercises (and, for counterexamples, the
   kind of input that should break it).
 
-Functions stay inside the supported subset (typed params; int/bool/list[int];
+Functions stay inside the supported subset (typed params; int/bool/list[int]/str;
 arithmetic, comparisons, boolean logic; `if/else`; conditional expressions;
-`for ... in range(...)` and `for x in xs` loops without `return` inside;
-`len(xs)` and `xs[i]` reads). See `../../ROADMAP.md`.
+`for ... in range(...)` and `for x in xs` loops with `return`/`break`/`continue`;
+`len`, indexing, list/string literals and `+`). See `../../ROADMAP.md`.
 
 `list[int]` inputs are bounded to length `--bound`, so an array verdict reads
 "holds for lists up to length N". Out-of-bounds `xs[i]` and divide-by-zero are
@@ -50,6 +50,8 @@ needs an `n >= 0` precondition the tool can't yet express — hence it's not her
 - `contains.py` — `EQUIVALENT`: early-return search vs. found-flag (`return` in a loop).
 - `map_double.py` — `EQUIVALENT`: build a list, `x*2` vs `x+x` (list output).
 - `list_filter_bug.py` — `COUNTEREXAMPLE`: filter with a `>`/`>=` bug (list output).
+- `str_count_char.py` — `EQUIVALENT`: count a char two ways over a `str`.
+- `str_concat_order.py` — `COUNTEREXAMPLE`: `s + t` vs `t + s` (not commutative).
 
 A fixture may declare an input precondition with a leading `assume(<expr>)`
 (see `sum_to_n.py`); the pair only needs to be equivalent where the precondition

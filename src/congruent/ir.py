@@ -17,9 +17,11 @@ Supported subset (v1):
     - `for <var> in range(...)` bounded loops, with `return`/`break`/`continue`
     - `list[int]` inputs: `len(xs)`, `xs[i]` (read), `for x in xs` iteration
     - building/returning `list[int]`: list literals `[a, b]` and `+` concatenation
+    - bounded `str` (sequence of code points): literals, `len`, `==`/`!=`, `+`,
+      indexing, and iteration; a character is a length-1 string
 
 Out of scope (raise `UnsupportedConstruct` loudly — never ignored):
-    while, recursion-via-call, floats, strings, I/O, global mutation,
+    while, recursion-via-call, floats, I/O, global mutation,
     list/attribute/subscript *assignment*, comprehensions, exceptions.
     Refusing to model a construct is what keeps verdicts honest.
 """
@@ -28,7 +30,6 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
-from typing import Union
 
 
 class UnsupportedConstruct(Exception):
@@ -51,59 +52,66 @@ class Const:
 @dataclass(frozen=True)
 class BinOp:
     op: str  # + - * // %
-    left: "Expr"
-    right: "Expr"
+    left: Expr
+    right: Expr
 
 
 @dataclass(frozen=True)
 class UnaryOp:
     op: str  # - | not
-    operand: "Expr"
+    operand: Expr
 
 
 @dataclass(frozen=True)
 class Compare:
     op: str  # < <= > >= == !=
-    left: "Expr"
-    right: "Expr"
+    left: Expr
+    right: Expr
 
 
 @dataclass(frozen=True)
 class BoolOp:
     op: str  # and | or
-    values: tuple["Expr", ...]
+    values: tuple[Expr, ...]
 
 
 @dataclass(frozen=True)
 class IfExp:
-    test: "Expr"
-    body: "Expr"
-    orelse: "Expr"
+    test: Expr
+    body: Expr
+    orelse: Expr
 
 
 @dataclass(frozen=True)
 class Len:
     """`len(<value>)` — the length of a list."""
 
-    value: "Expr"
+    value: Expr
 
 
 @dataclass(frozen=True)
 class Subscript:
     """`<value>[<index>]` — read an element of a list."""
 
-    value: "Expr"
-    index: "Expr"
+    value: Expr
+    index: Expr
 
 
 @dataclass(frozen=True)
 class ListLit:
     """A list literal `[e0, e1, ...]` (including the empty list `[]`)."""
 
-    elements: tuple["Expr", ...]
+    elements: tuple[Expr, ...]
 
 
-Expr = Union[Name, Const, BinOp, UnaryOp, Compare, BoolOp, IfExp, Len, Subscript, ListLit]
+@dataclass(frozen=True)
+class StrLit:
+    """A string literal `"..."` — modeled as a bounded sequence of code points."""
+
+    value: str
+
+
+Expr = Name | Const | BinOp | UnaryOp | Compare | BoolOp | IfExp | Len | Subscript | ListLit | StrLit
 
 
 # --- Statements ------------------------------------------------------------
@@ -122,8 +130,8 @@ class Assign:
 @dataclass(frozen=True)
 class If:
     test: Expr
-    body: tuple["Stmt", ...]
-    orelse: tuple["Stmt", ...]
+    body: tuple[Stmt, ...]
+    orelse: tuple[Stmt, ...]
 
 
 @dataclass(frozen=True)
@@ -138,7 +146,7 @@ class For:
     var: str
     start: Expr
     stop: Expr
-    body: tuple["Stmt", ...]
+    body: tuple[Stmt, ...]
 
 
 @dataclass(frozen=True)
@@ -151,7 +159,7 @@ class ForEach:
 
     var: str
     iterable: Expr
-    body: tuple["Stmt", ...]
+    body: tuple[Stmt, ...]
 
 
 @dataclass(frozen=True)
@@ -164,7 +172,7 @@ class Continue:
     """`continue` — skip to the next iteration of the nearest enclosing loop."""
 
 
-Stmt = Union[Return, Assign, If, For, ForEach, Break, Continue]
+Stmt = Return | Assign | If | For | ForEach | Break | Continue
 
 
 @dataclass(frozen=True)
@@ -272,7 +280,9 @@ def _extract_preconditions(stmts: list[ast.stmt]) -> tuple[tuple[Precondition, .
     preconds: list[Precondition] = []
     i = 0
     while i < len(stmts) and _is_assume_call(stmts[i]):
-        call = stmts[i].value
+        node = stmts[i]
+        assert isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)  # _is_assume_call
+        call = node.value
         if len(call.args) != 1 or call.keywords:
             raise UnsupportedConstruct("assume(...) takes exactly one boolean argument")
         preconds.append(Precondition(_lower_expr(call.args[0]), ast.unparse(call.args[0])))
@@ -298,7 +308,7 @@ def _strip_docstring(stmts: list[ast.stmt]) -> list[ast.stmt]:
 
 
 def _normalize_type(node: ast.expr) -> str:
-    if isinstance(node, ast.Name) and node.id in {"int", "bool"}:
+    if isinstance(node, ast.Name) and node.id in {"int", "bool", "str"}:
         return node.id
     if (
         isinstance(node, ast.Subscript)
@@ -394,6 +404,8 @@ def _lower_expr(node: ast.expr) -> Expr:
             return Const(node.value, "bool")
         if isinstance(node.value, int):
             return Const(node.value, "int")
+        if isinstance(node.value, str):
+            return StrLit(node.value)
         raise UnsupportedConstruct(f"unsupported literal: {node.value!r}")
 
     if isinstance(node, ast.BinOp):

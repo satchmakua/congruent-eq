@@ -17,10 +17,10 @@ The credibility of this tool is its honesty about what it does and doesn't do. v
 | In scope (v1) | Out of scope (v1 — see [ROADMAP.md](ROADMAP.md)) |
 | --- | --- |
 | Pure, deterministic functions (no I/O, no global mutation) | Side effects, I/O, concurrency |
-| Bounded inputs: machine ints, bools, fixed-length arrays/lists | Floating-point exactness |
+| Bounded inputs: machine ints, bools, fixed-length lists, bounded strings | Floating-point exactness |
 | Integer/boolean arithmetic, comparisons, branches | Unbounded loops/recursion (only bounded, unrolled to depth `k`) |
-| Bounded loops, unrolled to depth `k` (reported honestly) | Heap aliasing, full object semantics |
-| One language: a **Python** subset (C is a stretch goal) | Full language semantics |
+| Bounded loops (`return`/`break`/`continue`), unrolled to depth `k` | Heap aliasing, full object semantics |
+| A **Python** subset, plus a **C** subset front end | Full language semantics |
 
 Verdicts:
 
@@ -130,10 +130,12 @@ EQUIVALENT  (stage: symbolic, 0.00s)
 > ints/bools, branches, `for ... in range(...)` and `for x in xs` loops (bounded
 > model checking) with `return`/`break`/`continue`, `assume(...)` preconditions, and bounded
 > `list[int]` both as inputs (`len`, iteration, `xs[i]`) and as **outputs** (build
-> and return a list via literals + `+`). Out-of-bounds access and divide-by-zero
+> and return a list via literals + `+`), and bounded **`str`** (literals, `len`,
+> `==`, `+`, indexing, iteration). Out-of-bounds access and divide-by-zero
 > are modeled as runtime errors (a rewrite that crashes where the original didn't
 > is a counterexample), and counterexamples are minimized to the smallest failing
-> input. Benchmarks pass with zero unsound verdicts. See [ROADMAP.md](ROADMAP.md).
+> input. An optional `--cross-check` re-decides each query with CVC5. Benchmarks
+> pass with zero unsound verdicts. See [ROADMAP.md](ROADMAP.md).
 
 ---
 
@@ -159,23 +161,24 @@ congruent path/to/original.py:func_name path/to/candidate.py:func_name --bound 8
 | `--int-width W` | `32` | Bit width for the fixed-width integer model |
 | `--assume EXPR` | — | Precondition on the inputs, e.g. `--assume 'n >= 0'` (repeatable) |
 | `--no-minimize` | off | Report the first counterexample found, not the smallest |
+| `--cross-check` | off | Re-decide with CVC5 and flag any disagreement (needs `pip install cvc5`) |
 
 ## Layout
 
 ```
 src/congruent/
-  ir.py         # AST → normalized typed IR
-  difftest.py   # property-based prefilter (Stage 1)
+  ir.py         # Python AST → normalized typed IR
+  cfront.py     # C front end (pycparser → the same IR)
+  difftest.py   # differential prefilter + fixed-width concrete interpreter (Stage 1)
   symbolic.py   # symbolic interpreter → Z3 exprs (Stage 2)
-  solver.py     # Z3 abstraction + model decoding
+  solver.py     # equivalence query, model decoding, minimization
+  backends.py   # CVC5 cross-check (independent second opinion)
   equiv.py      # orchestration, escalation, Verdict data model
   report.py     # verdict formatting
   cli.py        # `congruent a.py:f b.py:g --bound 8`
-tests/
-  fixtures/     # equivalent + non-equivalent pairs (the eval set)
-  test_equiv.py
-examples/       # gallery of realistic AI-refactor pairs + run_gallery.py
-benchmarks/     # timing vs bound; recall on known pairs
+tests/          # 154 tests incl. a fuzz soundness guard
+examples/       # gallery of realistic AI-refactor pairs (Python + C) + runner
+benchmarks/     # recall gate, timing-vs-bound, self-validating fuzzer
 docs/demo.svg   # the README demo image
 ```
 
@@ -194,11 +197,15 @@ python examples/run_gallery.py
 ```bash
 python benchmarks/bench_recall.py     # verdict vs. expectation over the eval set
 python benchmarks/bench_scaling.py    # solver time vs. --bound
+python benchmarks/fuzz.py             # random pairs, each verdict re-checked
 ```
 
 `bench_recall.py` exits non-zero if any verdict is unsound (a false `EQUIVALENT`
-or false `COUNTEREXAMPLE`), so it doubles as a soundness gate — currently 10/10
-fixtures decided, 0 unsound.
+or false `COUNTEREXAMPLE`), so it doubles as a soundness gate. `fuzz.py` is the
+deepest check: it generates random function pairs, asks Congruent, and then
+*independently re-validates* each verdict against the concrete interpreter — so a
+false verdict fails loudly. ~4,900 random pairs (plus Z3↔CVC5 cross-checks) pass
+with zero unsound verdicts; a small deterministic batch runs in the test suite.
 
 ## Roadmap & progress
 

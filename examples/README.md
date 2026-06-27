@@ -16,6 +16,12 @@ Or check one pair with the CLI:
 congruent examples/midpoint_overflow.py:original examples/midpoint_overflow.py:candidate --int-width 32
 ```
 
+Congruent also reads **C** (files ending in `.c`, via `pip install pycparser`):
+
+```bash
+congruent examples/midpoint.c:original examples/midpoint.c:candidate --int-width 32
+```
+
 | Example | Refactor | Verdict |
 | --- | --- | --- |
 | [midpoint_overflow.py](midpoint_overflow.py) | `lo + (hi-lo)//2` → `(lo+hi)//2` | **COUNTEREXAMPLE** — overflows at 32 bits |
@@ -26,6 +32,7 @@ congruent examples/midpoint_overflow.py:original examples/midpoint_overflow.py:c
 | [has_negative.py](has_negative.py) | full scan → short-circuit with `break` | **EQUIVALENT** |
 | [count_positives.py](count_positives.py) | `>` quietly changed to `>=` | **COUNTEREXAMPLE** — lists with a `0` |
 | [keep_positives.py](keep_positives.py) | filter rewrite keeps zeros (`>=` vs `>`) | **COUNTEREXAMPLE** — list in, list out |
+| [string_greeting.py](string_greeting.py) | greeting with swapped concatenation order | **COUNTEREXAMPLE** — `str` in, `str` out |
 
 Each module declares `TITLE`, `STORY`, `EXPECTED`, and an `original` / `candidate`
 pair; `tests/test_examples.py` pins every verdict so the gallery can't rot.

@@ -21,7 +21,6 @@ from congruent import ir
 from congruent.equiv import Counterexample
 from congruent.ir import Function
 
-
 # --- fixed-width integer model --------------------------------------------
 
 def _wrap(value: int, width: int) -> int:
@@ -132,11 +131,15 @@ def _exec_stmt(stmt: ir.Stmt, env: dict[str, object], ctx: _Ctx) -> None:
         return
     if isinstance(stmt, ir.ForEach):
         seq = _eval(stmt.iterable, env, ctx)
-        if not isinstance(seq, list):
+        if not isinstance(seq, (list, str)):
             raise TypeError(f"{stmt.iterable!r} is not iterable")
         if len(seq) > ctx.bound:
             raise _OutOfBound
-        _run_loop((_wrap(int(elem), ctx.width) for elem in seq), stmt, env, ctx)
+        if isinstance(seq, str):
+            values = iter(seq)  # each character is a 1-char string
+        else:
+            values = (_wrap(int(elem), ctx.width) for elem in seq)
+        _run_loop(values, stmt, env, ctx)
         env.pop(stmt.var, None)
         return
     raise AssertionError(f"unhandled statement node: {stmt!r}")
@@ -167,10 +170,10 @@ def _eval(node: ir.Expr, env: dict[str, object], ctx: _Ctx) -> object:
     if isinstance(node, ir.BinOp):
         left = _eval(node.left, env, ctx)
         right = _eval(node.right, env, ctx)
-        if isinstance(left, list) or isinstance(right, list):
-            if node.op == "+" and isinstance(left, list) and isinstance(right, list):
-                return left + right  # list concatenation
-            raise TypeError("unsupported operand types for list operation")
+        if isinstance(left, (list, str)) or isinstance(right, (list, str)):
+            if node.op == "+" and type(left) is type(right):
+                return left + right  # list or string concatenation
+            raise TypeError("unsupported operand types for sequence operation")
         return _wrap(_apply_binop(node.op, int(left), int(right)), ctx.width)
 
     if isinstance(node, ir.UnaryOp):
@@ -199,10 +202,15 @@ def _eval(node: ir.Expr, env: dict[str, object], ctx: _Ctx) -> object:
         index = int(_eval(node.index, env, ctx))  # type: ignore[arg-type]
         if not 0 <= index < len(seq):  # type: ignore[arg-type]
             raise IndexError(index)  # out-of-range (incl. negative) is a divergence
+        if isinstance(seq, str):
+            return seq[index]  # a 1-char string
         return _wrap(int(seq[index]), ctx.width)  # type: ignore[index]
 
     if isinstance(node, ir.ListLit):
         return [_wrap(int(_eval(e, env, ctx)), ctx.width) for e in node.elements]
+
+    if isinstance(node, ir.StrLit):
+        return node.value
 
     raise AssertionError(f"unhandled expression node: {node!r}")
 
@@ -214,11 +222,21 @@ def _apply_binop(op: str, a: int, b: int) -> int:
         return a - b
     if op == "*":
         return a * b
-    if op == "//":
+    if op == "//":  # Python floor division
         return a // b
-    if op == "%":
+    if op == "%":  # Python floor modulo
         return a % b
+    if op == "c/":  # C truncating division
+        return _trunc_div(a, b)
+    if op == "c%":  # C truncating remainder
+        return a - _trunc_div(a, b) * b
     raise AssertionError(f"unhandled binop {op!r}")
+
+
+def _trunc_div(a: int, b: int) -> int:
+    """Integer division truncating toward zero (C semantics)."""
+    quotient = abs(a) // abs(b)
+    return quotient if (a < 0) == (b < 0) else -quotient
 
 
 def _apply_cmp(op: str, a: object, b: object) -> bool:
@@ -239,6 +257,9 @@ def _apply_cmp(op: str, a: object, b: object) -> bool:
 
 # --- input generation ------------------------------------------------------
 
+_STR_ALPHABET = "ab"  # small alphabet keeps string counterexamples readable
+
+
 def _boundary_values(type_name: str, width: int) -> list[object]:
     imin, imax = _int_min_max(width)
     if type_name == "int":
@@ -247,6 +268,8 @@ def _boundary_values(type_name: str, width: int) -> list[object]:
         return [True, False]
     if type_name == "list[int]":
         return [[], [0], [1], [-1], [imin], [imax], [imax, imin, 0]]
+    if type_name == "str":
+        return ["", "a", "b", "ab", "ba", "aa"]
     raise AssertionError(f"no generator for type {type_name!r}")
 
 
@@ -258,6 +281,8 @@ def _random_value(type_name: str, width: int, bound: int, rng: random.Random) ->
         return rng.random() < 0.5
     if type_name == "list[int]":
         return [rng.randint(imin, imax) for _ in range(rng.randint(0, bound))]
+    if type_name == "str":
+        return "".join(rng.choice(_STR_ALPHABET) for _ in range(rng.randint(0, bound)))
     raise AssertionError(f"no generator for type {type_name!r}")
 
 

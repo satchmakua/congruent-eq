@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install (with optional backends)
+        run: python -m pip install -e ".[dev,cross-check,c]"
+      - name: Lint (ruff)
+        run: ruff check src tests benchmarks
+      - name: Type-check (mypy)
+        run: mypy
+      - name: Test (pytest)
+        run: pytest -q
+      - name: Recall benchmark (zero unsound verdicts)
+        run: python benchmarks/bench_recall.py

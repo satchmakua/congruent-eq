@@ -53,10 +53,16 @@ class UnsupportedForProof(Exception):
 
 @dataclass(frozen=True)
 class SymList:
-    """A symbolic list[int]: a Z3 array of elements plus a symbolic length."""
+    """A symbolic bounded sequence: a Z3 array of elements plus a symbolic length.
+
+    `kind` is "int" for `list[int]` (indexing/iteration yields an int) or "char"
+    for `str` (a character is itself a length-1 string, so indexing/iteration
+    yields a 1-char `SymList`). The element array holds code points either way.
+    """
 
     arr: z3.ArrayRef
     length: z3.ExprRef  # BitVec; constrained 0 <= length <= bound at the query
+    kind: str = "int"  # "int" | "char"
 
 
 @dataclass
@@ -92,17 +98,25 @@ def make_inputs(
     """
     values: list = []
     constraints: list[z3.BoolRef] = []
+    zero = z3.BitVecVal(0, int_width)
+    cap = z3.BitVecVal(bound, int_width)
     for i, param in enumerate(params):
         if param.type_name == "int":
             values.append(z3.BitVec(f"in{i}", int_width))
         elif param.type_name == "bool":
             values.append(z3.Bool(f"in{i}"))
-        elif param.type_name == "list[int]":
+        elif param.type_name in ("list[int]", "str"):
+            kind = "char" if param.type_name == "str" else "int"
             arr = z3.Array(f"in{i}", z3.BitVecSort(int_width), z3.BitVecSort(int_width))
             length = z3.BitVec(f"in{i}_len", int_width)
-            values.append(SymList(arr, length))
-            zero = z3.BitVecVal(0, int_width)
-            constraints.append(z3.And(zero <= length, length <= z3.BitVecVal(bound, int_width)))
+            values.append(SymList(arr, length, kind))
+            constraints.append(z3.And(zero <= length, length <= cap))
+            if kind == "char":
+                # Constrain code points to ASCII so counterexamples decode cleanly.
+                ascii_max = z3.BitVecVal(127, int_width)
+                for k in range(bound):
+                    e = z3.Select(arr, z3.BitVecVal(k, int_width))
+                    constraints.append(z3.And(zero <= e, e <= ascii_max))
         else:
             raise UnsupportedForProof(f"parameter type {param.type_name!r} not modeled yet")
     return values, constraints
@@ -238,10 +252,15 @@ def _unroll_foreach(loop: ir.ForEach, env: _Env, ctx: _Ctx, pc, returned, retval
         raise UnsupportedForProof("can only iterate a list[int]")
 
     # No extra in-bound assumption: list length is bounded to [0, bound] by
-    # make_inputs, so `bound` unrollings cover every valid list.
+    # make_inputs, so `bound` unrollings cover every valid list. Iterating a
+    # string yields 1-char strings; iterating a list yields int elements.
+    def element(k: int):
+        idx = z3.BitVecVal(k, ctx.w)
+        return _char_at(seq, idx, ctx.w) if seq.kind == "char" else z3.Select(seq.arr, idx)
+
     return _run_iterations(
         loop, env, ctx, pc, returned, retval,
-        idx_of=lambda k: z3.Select(seq.arr, z3.BitVecVal(k, ctx.w)),
+        idx_of=element,
         guard_of=lambda k: z3.ULT(z3.BitVecVal(k, ctx.w), seq.length),  # k < len
     )
 
@@ -256,7 +275,6 @@ def _require_initialized(loop, env: _Env) -> set[str]:
             f"variable(s) {sorted(missing)} assigned in a loop but not initialized before it"
         )
     return written
-    return cur
 
 
 def _assigned_names(stmts) -> set[str]:
@@ -318,21 +336,25 @@ def _eval(node: ir.Expr, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> z3.ExprRef:
     if isinstance(node, ir.Len):
         value = _eval(node.value, env, ctx, pc)
         if not isinstance(value, SymList):
-            raise UnsupportedForProof("len() of a non-list value")
+            raise UnsupportedForProof("len() of a non-sequence value")
         return value.length
 
     if isinstance(node, ir.Subscript):
         seq = _eval(node.value, env, ctx, pc)
         if not isinstance(seq, SymList):
-            raise UnsupportedForProof("indexing a non-list value")
+            raise UnsupportedForProof("indexing a non-sequence value")
         index = _as_bv(_eval(node.index, env, ctx, pc), ctx.w)
         zero = z3.BitVecVal(0, ctx.w)
         in_bounds = z3.And(zero <= index, index < seq.length)  # signed; no negative indexing
         ctx.error_terms.append(z3.And(pc, z3.Not(in_bounds)))
-        return z3.Select(seq.arr, index)
+        # str[i] is a 1-char string; list[i] is the int element.
+        return _char_at(seq, index, ctx.w) if seq.kind == "char" else z3.Select(seq.arr, index)
 
     if isinstance(node, ir.ListLit):
-        return _build_list([_eval(e, env, ctx, pc) for e in node.elements], ctx.w)
+        return _build_seq([_eval(e, env, ctx, pc) for e in node.elements], ctx.w, "int")
+
+    if isinstance(node, ir.StrLit):
+        return _build_seq([z3.BitVecVal(ord(c), ctx.w) for c in node.value], ctx.w, "char")
 
     raise AssertionError(f"unhandled expression node: {node!r}")
 
@@ -341,19 +363,21 @@ def _eval_binop(node: ir.BinOp, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> z3.Expr
     left = _eval(node.left, env, ctx, pc)
     if isinstance(left, SymList):
         if node.op != "+":
-            raise UnsupportedForProof("unsupported list operation")
-        # Fast path: `xs + [a, b, ...]` is an append — a couple of Stores at the
-        # tail, far cheaper than the general capacity reconstruction.
+            raise UnsupportedForProof("unsupported sequence operation")
+        # Fast path: appending a literal is a couple of Stores at the tail, far
+        # cheaper than the general capacity reconstruction.
         if isinstance(node.right, ir.ListLit):
             return _append(left, [_eval(e, env, ctx, pc) for e in node.right.elements], ctx)
+        if isinstance(node.right, ir.StrLit):
+            return _append(left, [z3.BitVecVal(ord(c), ctx.w) for c in node.right.value], ctx)
         right = _eval(node.right, env, ctx, pc)
         if not isinstance(right, SymList):
-            raise UnsupportedForProof("unsupported list operation")
+            raise UnsupportedForProof("unsupported sequence operation")
         return _concat(left, right, ctx)
 
     right = _eval(node.right, env, ctx, pc)
     if isinstance(right, SymList):
-        raise UnsupportedForProof("unsupported list operation")
+        raise UnsupportedForProof("unsupported sequence operation")
     left = _as_bv(left, ctx.w)
     right = _as_bv(right, ctx.w)
     op = node.op
@@ -363,10 +387,16 @@ def _eval_binop(node: ir.BinOp, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> z3.Expr
         return left - right
     if op == "*":
         return left * right
-    if op in ("//", "%"):
+    if op in ("//", "%", "c/", "c%"):
         # Division/modulo by zero is a runtime error, guarded by the path condition.
         ctx.error_terms.append(z3.And(pc, right == z3.BitVecVal(0, ctx.w)))
-        return _floordiv(left, right) if op == "//" else _floormod(left, right)
+        if op == "//":
+            return _floordiv(left, right)          # Python floor division
+        if op == "%":
+            return _floormod(left, right)          # Python floor modulo
+        if op == "c/":
+            return left / right                    # C truncating division (z3 bvsdiv)
+        return left - (left / right) * right        # C truncating remainder
     raise AssertionError(f"unhandled binop {op!r}")
 
 
@@ -374,6 +404,12 @@ def _eval_compare(node: ir.Compare, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> z3.
     left = _eval(node.left, env, ctx, pc)
     right = _eval(node.right, env, ctx, pc)
     op = node.op
+    if isinstance(left, SymList) or isinstance(right, SymList):
+        # Sequence comparison (str/list): equality only.
+        if not (isinstance(left, SymList) and isinstance(right, SymList) and op in ("==", "!=")):
+            raise UnsupportedForProof("only == / != is supported on sequences")
+        equal = _seq_eq(left, right, ctx)
+        return equal if op == "==" else z3.Not(equal)
     if op in ("==", "!="):
         if z3.is_bool(left) and z3.is_bool(right):
             return left == right if op == "==" else left != right
@@ -427,25 +463,46 @@ def _merge(cond: z3.ExprRef, then_val, else_val, w: int):
         return SymList(
             z3.If(cond, then_val.arr, else_val.arr),
             z3.If(cond, then_val.length, else_val.length),
+            then_val.kind if isinstance(then_val, SymList) else else_val.kind,
         )
     if z3.is_bool(then_val) and z3.is_bool(else_val):
         return z3.If(cond, then_val, else_val)
     return z3.If(cond, _as_bv(then_val, w), _as_bv(else_val, w))
 
 
-# --- list[int] values ------------------------------------------------------
+# --- sequence values (list[int] and str) -----------------------------------
 
-def _empty_list(width: int) -> SymList:
+def _empty_seq(width: int, kind: str) -> SymList:
     arr = z3.K(z3.BitVecSort(width), z3.BitVecVal(0, width))  # all-zero array
-    return SymList(arr, z3.BitVecVal(0, width))
+    return SymList(arr, z3.BitVecVal(0, width), kind)
 
 
-def _build_list(elements, width: int) -> SymList:
-    result = _empty_list(width)
-    arr = result.arr
+def _build_seq(elements, width: int, kind: str) -> SymList:
+    arr = z3.K(z3.BitVecSort(width), z3.BitVecVal(0, width))
     for i, element in enumerate(elements):
         arr = z3.Store(arr, z3.BitVecVal(i, width), _as_bv(element, width))
-    return SymList(arr, z3.BitVecVal(len(elements), width))
+    return SymList(arr, z3.BitVecVal(len(elements), width), kind)
+
+
+def _char_at(seq: SymList, idx: z3.ExprRef, width: int) -> SymList:
+    """A single character of a string: a length-1 `str` value."""
+    arr = z3.Store(z3.K(z3.BitVecSort(width), z3.BitVecVal(0, width)), z3.BitVecVal(0, width),
+                   z3.Select(seq.arr, idx))
+    return SymList(arr, z3.BitVecVal(1, width), "char")
+
+
+def _seq_eq(a: SymList, b: SymList, ctx: _Ctx) -> z3.BoolRef:
+    """Sequence equality: same length and equal elements within the bound."""
+    same_elems = z3.And(
+        [
+            z3.Implies(
+                z3.ULT(z3.BitVecVal(k, ctx.w), a.length),
+                z3.Select(a.arr, z3.BitVecVal(k, ctx.w)) == z3.Select(b.arr, z3.BitVecVal(k, ctx.w)),
+            )
+            for k in range(ctx.bound)
+        ]
+    )
+    return z3.And(a.length == b.length, same_elems)
 
 
 def _append(a: SymList, elements, ctx: _Ctx) -> SymList:
@@ -454,18 +511,18 @@ def _append(a: SymList, elements, ctx: _Ctx) -> SymList:
     for element in elements:
         arr = z3.Store(arr, length, _as_bv(element, ctx.w))
         length = length + z3.BitVecVal(1, ctx.w)
-    return SymList(arr, length)
+    return SymList(arr, length, a.kind)
 
 
 def _concat(a: SymList, b: SymList, ctx: _Ctx) -> SymList:
-    """General list+list concatenation. Builds slots 0..bound-1; results longer
+    """General sequence concatenation. Builds slots 0..bound-1; results longer
     than `bound` are ruled out of scope by the output-length bound in the query."""
     arr = z3.K(z3.BitVecSort(ctx.w), z3.BitVecVal(0, ctx.w))
     for k in range(ctx.bound):
         kk = z3.BitVecVal(k, ctx.w)
         value = z3.If(z3.ULT(kk, a.length), z3.Select(a.arr, kk), z3.Select(b.arr, kk - a.length))
         arr = z3.Store(arr, kk, value)
-    return SymList(arr, a.length + b.length)
+    return SymList(arr, a.length + b.length, a.kind)
 
 
 # --- return-value kinds ----------------------------------------------------
@@ -475,6 +532,8 @@ def _ret_kind(return_type: str) -> str:
         return "bool"
     if return_type == "list[int]":
         return "list"
+    if return_type == "str":
+        return "str"
     return "int"
 
 
@@ -482,15 +541,18 @@ def _empty_retval(ret_kind: str, width: int):
     if ret_kind == "bool":
         return z3.BoolVal(False)
     if ret_kind == "list":
-        return _empty_list(width)
+        return _empty_seq(width, "int")
+    if ret_kind == "str":
+        return _empty_seq(width, "char")
     return z3.BitVecVal(0, width)
 
 
 def _coerce_return(raw, ctx: _Ctx):
     if ctx.ret_kind == "bool":
         return _as_bool(raw)
-    if ctx.ret_kind == "list":
-        if not isinstance(raw, SymList):
-            raise UnsupportedForProof("function annotated -> list[int] did not return a list")
+    if ctx.ret_kind in ("list", "str"):
+        want = "char" if ctx.ret_kind == "str" else "int"
+        if not isinstance(raw, SymList) or raw.kind != want:
+            raise UnsupportedForProof(f"function annotated -> {ctx.ret_kind} did not return one")
         return raw
     return _as_bv(raw, ctx.w)

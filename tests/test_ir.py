@@ -122,7 +122,7 @@ def test_parse_return_inside_loop() -> None:
         "def f(x: int):\n    return x",  # missing return annotation
         "def f(x) -> int:\n    return x",  # missing param annotation
         "def f(x: int) -> int:\n    return",  # bare return
-        "def f(x: int) -> str:\n    return 'a'",  # string literal / type
+        "def f(x: float) -> int:\n    return 0",  # float param type
     ],
 )
 def test_unsupported_constructs_raise(source: str) -> None:

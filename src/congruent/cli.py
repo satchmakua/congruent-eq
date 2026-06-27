@@ -56,7 +56,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-minimize", dest="minimize", action="store_false",
         help="report the first counterexample found, not the smallest",
     )
+    parser.add_argument(
+        "--cross-check", action="store_true",
+        help="independently re-decide with CVC5 and flag any disagreement",
+    )
     return parser
+
+
+def _parse_file(path: str, name: str):
+    """Parse a function from a file, picking the front end by extension (.c = C)."""
+    source = Path(path).read_text(encoding="utf-8")
+    if path.endswith(".c"):
+        from congruent.cfront import parse_c_function
+        return parse_c_function(source, name)
+    return parse_function(source, name)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -67,8 +80,8 @@ def main(argv: list[str] | None = None) -> int:
     (cand_path, cand_name) = args.candidate
 
     try:
-        original = parse_function(Path(orig_path).read_text(encoding="utf-8"), orig_name)
-        candidate = parse_function(Path(cand_path).read_text(encoding="utf-8"), cand_name)
+        original = _parse_file(orig_path, orig_name)
+        candidate = _parse_file(cand_path, cand_name)
         original.preconditions += tuple(parse_condition(a) for a in args.assume)
     except FileNotFoundError as exc:
         print(f"congruent: file not found: {exc.filename}", file=sys.stderr)
@@ -78,7 +91,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     verdict = check(
-        original, candidate, bound=args.bound, int_width=args.int_width, minimize=args.minimize
+        original, candidate, bound=args.bound, int_width=args.int_width,
+        minimize=args.minimize, cross_check=args.cross_check,
     )
     print(format_verdict(verdict))
     return {
