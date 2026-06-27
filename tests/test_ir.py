@@ -111,8 +111,8 @@ def test_parse_return_inside_loop() -> None:
     [
         "def f(x: int) -> int:\n    while x:\n        x = x - 1\n    return x",  # while loop
         "def f(x: int) -> int:\n    x = x + 1\n    assume(x > 0)\n    return x",  # non-leading assume
-        "def f(x: int) -> int:\n    for i in range(x):\n        break\n    return x",  # break
-        "def f(x: int) -> int:\n    for i in range(x):\n        continue\n    return x",  # continue
+        "def f(x: int) -> int:\n    break\n    return x",  # break outside a loop
+        "def f(x: int) -> int:\n    continue\n    return x",  # continue outside a loop
         "def f(x: int) -> int:\n    for i in range(x):\n        pass\n    else:\n        pass\n    return x",  # for/else
         "def f(x: int) -> int:\n    for i in range(0, x, 2):\n        x = x + 1\n    return x",  # range step
         "def f(x: float) -> float:\n    return x",  # float type

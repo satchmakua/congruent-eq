@@ -23,6 +23,7 @@ congruent examples/midpoint_overflow.py:original examples/midpoint_overflow.py:c
 | [list_maximum.py](list_maximum.py) | running max seeded at `0` instead of `xs[0]` | **COUNTEREXAMPLE** — all-negative lists |
 | [sum_0_to_n.py](sum_0_to_n.py) | accumulating loop → Gauss closed form | **EQUIVALENT** (for `n >= 0`) |
 | [all_positive.py](all_positive.py) | full scan → short-circuit early return | **EQUIVALENT** |
+| [has_negative.py](has_negative.py) | full scan → short-circuit with `break` | **EQUIVALENT** |
 | [count_positives.py](count_positives.py) | `>` quietly changed to `>=` | **COUNTEREXAMPLE** — lists with a `0` |
 | [keep_positives.py](keep_positives.py) | filter rewrite keeps zeros (`>=` vs `>`) | **COUNTEREXAMPLE** — list in, list out |
 

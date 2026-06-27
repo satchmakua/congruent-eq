@@ -128,7 +128,7 @@ EQUIVALENT  (stage: symbolic, 0.00s)
 > both functions to Z3 bitvector expressions and returns `EQUIVALENT` (UNSAT), a
 > `COUNTEREXAMPLE` (SAT, decoded to concrete inputs), or `UNKNOWN`. Supported:
 > ints/bools, branches, `for ... in range(...)` and `for x in xs` loops (bounded
-> model checking) with early `return`, `assume(...)` preconditions, and bounded
+> model checking) with `return`/`break`/`continue`, `assume(...)` preconditions, and bounded
 > `list[int]` both as inputs (`len`, iteration, `xs[i]`) and as **outputs** (build
 > and return a list via literals + `+`). Out-of-bounds access and divide-by-zero
 > are modeled as runtime errors (a rewrite that crashes where the original didn't

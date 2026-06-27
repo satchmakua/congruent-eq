@@ -68,11 +68,12 @@ floor `//`/`%`; sound `UNKNOWN` fallback for anything not yet modeled.
 - map (`x*2` vs `x+x`) and filter rewrites prove EQUIVALENT; off-by-one map /
   `>`-vs-`>=` filter / non-commutative concat yield counterexamples.
 
-### M7 — Reach & robustness 🔜
-- Pluggable CVC5 backend behind the `solver` abstraction (cross-check verdicts).
-- Bounded strings (as bounded `list[int]` of code points, or a dedicated sort).
-- `break` / `continue` inside loops (deferred from M4).
-- *(Stretch)* C-subset front end; auto-check LLM-suggested refactors.
+### M7 — Reach & robustness *(in progress)*
+- [x] `break` / `continue` inside loops — each loop owns a `broken` (accumulates,
+      stops the loop) and a per-iteration `continued`, threaded like `returned`.
+- [ ] Pluggable CVC5 backend behind the `solver` abstraction (cross-check verdicts).
+- [ ] Bounded strings (as bounded `list[int]` of code points, or a dedicated sort).
+- [ ] *(Stretch)* C-subset front end; auto-check LLM-suggested refactors.
 
 ---
 
