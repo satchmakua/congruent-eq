@@ -98,7 +98,7 @@ demo, which needs network/API access — the v1 product is here.
 
 Stated plainly in the README as current limitations — roadmap, not failure:
 
-- Unbounded loops / recursion without a bound
+- Recursion / function calls (loops are the only unrolled construct); unbounded loops
 - Floating-point exactness
 - Side effects, I/O, global mutation
 - Concurrency

@@ -71,7 +71,9 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["E501"]  # test fixtures embed long source-string literals
+# test fixtures and the fuzzer embed long source-string literals / IR builders
+"tests/*" = ["E501"]
+"benchmarks/*" = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"

@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("candidate", type=_parse_spec, help="candidate spec, e.g. b.py:g")
     parser.add_argument(
         "--bound", type=int, default=8,
-        help="loop/recursion unroll depth and array-length bound (default: 8)",
+        help="loop unroll depth and list/string-length bound (default: 8)",
     )
     parser.add_argument(
         "--int-width", type=int, default=32,

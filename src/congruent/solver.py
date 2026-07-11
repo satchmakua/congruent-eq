@@ -118,16 +118,15 @@ def _equivalence_query(original, candidate, int_width, bound):
     summary_c = symbolic.summarize(candidate, inputs, int_width, bound)
 
     constraints = list(well_formed)
-    constraints += symbolic.lower_preconditions(original, inputs, int_width)
-    constraints += symbolic.lower_preconditions(candidate, inputs, int_width)
+    # Only the ORIGINAL's precondition constrains the domain: a precondition the
+    # candidate adds is itself a behavioral change (domain narrowing) and must
+    # surface as a counterexample, not be assumed away.
+    constraints += symbolic.lower_preconditions(original, inputs, int_width, bound)
     constraints += summary_o.assumptions + summary_c.assumptions
 
-    # Bound built output lists to length `bound` too (inputs producing longer
-    # outputs are out of scope), so the element-wise comparison below is complete.
-    cap = z3.BitVecVal(bound, int_width)
-    for summary in (summary_o, summary_c):
-        if isinstance(summary.output, symbolic.SymList):
-            constraints.append(z3.ULE(summary.output.length, cap))
+    # No output-length cap constraint is needed: each SymList carries its own static
+    # max length (`cap`), `length <= cap` holds by construction, and `_differ`
+    # compares over that cap — so no in-scope input is ever dropped from the query.
 
     # Functions differ if their runtime-error behavior differs, or if both
     # complete normally but produce different outputs.
@@ -193,7 +192,7 @@ def _scope_note(original, candidate, summary_o, summary_c, int_width, bound) -> 
         bounded_bits.append(f"loops up to {bound} iterations")
     if bounded_bits:
         return "holds within bound: " + ", ".join(bounded_bits)
-    if original.preconditions or candidate.preconditions:
+    if original.preconditions:
         return f"complete: agree on all {int_width}-bit inputs satisfying the precondition"
     return f"complete: agree on all {int_width}-bit inputs (no loops to bound)"
 
@@ -201,7 +200,8 @@ def _scope_note(original, candidate, summary_o, summary_c, int_width, bound) -> 
 def _differ(a, b, int_width: int, bound: int) -> z3.ExprRef:
     """Assertion that the two outputs disagree, coercing to a common sort."""
     if isinstance(a, symbolic.SymList) and isinstance(b, symbolic.SymList):
-        # Differ if lengths differ, or some in-range element differs.
+        # Differ if lengths differ, or some in-range element differs. Compare over
+        # the larger static capacity so a longer computed output is fully covered.
         element_differs = z3.Or(
             [
                 z3.And(
@@ -209,7 +209,7 @@ def _differ(a, b, int_width: int, bound: int) -> z3.ExprRef:
                     z3.Select(a.arr, z3.BitVecVal(k, int_width))
                     != z3.Select(b.arr, z3.BitVecVal(k, int_width)),
                 )
-                for k in range(bound)
+                for k in range(max(a.cap, b.cap))
             ]
         )
         return z3.Or(a.length != b.length, element_differs)
@@ -244,7 +244,7 @@ def _decode_model(
 def _decode_seq(model: z3.ModelRef, sym: symbolic.SymList, int_width: int, bound: int) -> object:
     """Decode a SymList model value: a `str` (kind char) or a `list[int]`."""
     length = int(_to_py(model.eval(sym.length, model_completion=True)))
-    length = max(0, min(length, bound))
+    length = max(0, min(length, sym.cap))
     elements = [
         int(_to_py(model.eval(z3.Select(sym.arr, z3.BitVecVal(k, int_width)), model_completion=True)))
         for k in range(length)

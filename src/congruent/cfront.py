@@ -74,13 +74,37 @@ def _lower_function(node: c_ast.FuncDef) -> Function:
     decl = node.decl.type  # FuncDecl
     params: list[Param] = []
     args = decl.args.params if decl.args else []
+    if len(args) == 1 and args[0].name is None and _is_void(args[0].type):
+        args = []  # `int f(void)` — the idiomatic zero-parameter form
     for arg in args:
         if isinstance(arg, c_ast.EllipsisParam) or arg.name is None:
             raise UnsupportedConstruct("variadic / unnamed parameters are not supported")
         params.append(Param(arg.name, _type_of(arg.type)))
     return_type = _type_of(decl.type)
     body = _lower_block(node.body)
+    _reject_escaping_counter(body)
     return Function(node.decl.name, params, return_type, body)
+
+
+def _is_void(node: c_ast.Node) -> bool:
+    return (
+        isinstance(node, c_ast.TypeDecl)
+        and isinstance(node.type, c_ast.IdentifierType)
+        and node.type.names == ["void"]
+    )
+
+
+def _reject_escaping_counter(body: tuple[ir.Stmt, ...]) -> None:
+    """A C `for` counter holds the value that FAILED the guard after the loop
+    (e.g. `for(i=0;i<3;i++)` leaves i==3), which our range-loop model (Python
+    semantics, i==2) does not capture. So reject any loop whose counter is read
+    after/outside its body rather than mis-model it."""
+    for loop in _all_loops(body):
+        reads_after, _ = _reads_after(body, loop)
+        if loop.var in reads_after:
+            raise UnsupportedConstruct(
+                f"loop counter {loop.var!r} is used after the loop; not modeled (declare it in the for-init)"
+            )
 
 
 def _type_of(node: c_ast.Node) -> str:
@@ -203,7 +227,76 @@ def _is_const(node: c_ast.Node, value: int) -> bool:
 def _const_value(node: c_ast.Constant) -> int:
     if node.type == "char":
         return ord(node.value.strip("'").encode().decode("unicode_escape"))
-    return int(node.value.rstrip("uUlL"), 0)  # handles 0x.., 0.., decimal
+    text = node.value.rstrip("uUlL")
+    if len(text) > 1 and text[0] == "0" and text[1] not in "xXbB":
+        return int(text, 8)  # C octal literal, e.g. 010 == 8
+    return int(text, 0)  # 0x.., 0b.., decimal, plain 0
+
+
+# --- name analysis (for rejecting escaping C loop counters) -----------------
+
+def _all_loops(stmts) -> list:
+    loops: list = []
+    for stmt in stmts:
+        if isinstance(stmt, (ir.For, ir.ForEach)):
+            loops.append(stmt)
+            loops += _all_loops(stmt.body)
+        elif isinstance(stmt, ir.If):
+            loops += _all_loops(stmt.body) + _all_loops(stmt.orelse)
+    return loops
+
+
+def _reads(node) -> set[str]:
+    """Names read within an expression."""
+    if isinstance(node, ir.Name):
+        return {node.id}
+    if isinstance(node, ir.BinOp | ir.Compare):
+        return _reads(node.left) | _reads(node.right)
+    if isinstance(node, ir.UnaryOp):
+        return _reads(node.operand)
+    if isinstance(node, ir.BoolOp):
+        return set().union(*(_reads(v) for v in node.values)) if node.values else set()
+    if isinstance(node, ir.IfExp):
+        return _reads(node.test) | _reads(node.body) | _reads(node.orelse)
+    return set()  # Const, and (C never produces) Len/Subscript/ListLit/StrLit
+
+
+def _all_reads(node) -> set[str]:
+    """Every name read anywhere within a statement (or list of statements)."""
+    if isinstance(node, tuple):
+        return set().union(*(_all_reads(s) for s in node)) if node else set()
+    if isinstance(node, ir.For):
+        return _reads(node.start) | _reads(node.stop) | _all_reads(node.body)
+    if isinstance(node, ir.ForEach):
+        return _reads(node.iterable) | _all_reads(node.body)
+    if isinstance(node, ir.If):
+        return _reads(node.test) | _all_reads(node.body) | _all_reads(node.orelse)
+    if isinstance(node, (ir.Assign, ir.Return)):
+        return _reads(node.value)
+    return set()  # Break, Continue
+
+
+def _reads_after(stmts, loop) -> tuple[set[str], bool]:
+    """Names read in statements executed AFTER `loop` (flow-sensitive), plus
+    whether `loop` was found in `stmts`. A read strictly before the loop, or in a
+    branch that never reaches it, does not count."""
+    reads: set[str] = set()
+    found = False
+    for stmt in stmts:
+        if found:
+            reads |= _all_reads(stmt)
+        elif stmt is loop:
+            found = True
+        elif isinstance(stmt, ir.If):
+            r_then, f_then = _reads_after(stmt.body, loop)
+            r_else, f_else = _reads_after(stmt.orelse, loop)
+            reads |= r_then | r_else
+            found = f_then or f_else
+        elif isinstance(stmt, (ir.For, ir.ForEach)):
+            r, f = _reads_after(stmt.body, loop)
+            reads |= r
+            found = f
+    return reads, found
 
 
 def _lower_expr(node: c_ast.Node) -> ir.Expr:

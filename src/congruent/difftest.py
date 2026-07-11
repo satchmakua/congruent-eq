@@ -127,7 +127,9 @@ def _exec_stmt(stmt: ir.Stmt, env: dict[str, object], ctx: _Ctx) -> None:
         if not (start + ctx.bound <= imax and start <= stop <= start + ctx.bound):
             raise _OutOfBound
         _run_loop((_wrap(i, ctx.width) for i in range(start, stop)), stmt, env, ctx)
-        env.pop(stmt.var, None)  # loop variable does not escape the loop
+        # NB: like Python, the loop variable persists with its last value after
+        # the loop (or its prior binding if the loop ran zero times) — do NOT pop
+        # it, or a later `return i` would fabricate a spurious NameError.
         return
     if isinstance(stmt, ir.ForEach):
         seq = _eval(stmt.iterable, env, ctx)
@@ -140,7 +142,6 @@ def _exec_stmt(stmt: ir.Stmt, env: dict[str, object], ctx: _Ctx) -> None:
         else:
             values = (_wrap(int(elem), ctx.width) for elem in seq)
         _run_loop(values, stmt, env, ctx)
-        env.pop(stmt.var, None)
         return
     raise AssertionError(f"unhandled statement node: {stmt!r}")
 
@@ -257,7 +258,9 @@ def _apply_cmp(op: str, a: object, b: object) -> bool:
 
 # --- input generation ------------------------------------------------------
 
-_STR_ALPHABET = "ab"  # small alphabet keeps string counterexamples readable
+# A small alphabet keeps counterexamples readable but includes a non-ASCII
+# character so the differential stage also probes beyond ASCII.
+_STR_ALPHABET = "abé"
 
 
 def _boundary_values(type_name: str, width: int) -> list[object]:
@@ -269,7 +272,7 @@ def _boundary_values(type_name: str, width: int) -> list[object]:
     if type_name == "list[int]":
         return [[], [0], [1], [-1], [imin], [imax], [imax, imin, 0]]
     if type_name == "str":
-        return ["", "a", "b", "ab", "ba", "aa"]
+        return ["", "a", "b", "ab", "ba", "aa", "é"]
     raise AssertionError(f"no generator for type {type_name!r}")
 
 
@@ -325,8 +328,10 @@ def find_counterexample(
 
     pc_ctx = _Ctx(int_width, bound)
     for values in inputs:
-        if not _preconditions_hold((original, candidate), values, pc_ctx):
-            continue  # input violates a declared precondition — out of scope
+        # Only the original's precondition bounds the domain (see solver.py); a
+        # candidate-added precondition is a behavioral change, not a filter.
+        if not _preconditions_hold((original,), values, pc_ctx):
+            continue  # input violates the reference precondition — out of scope
         cx = _compare(original, candidate, values, int_width, bound)
         if cx is not None:
             return cx
@@ -344,8 +349,8 @@ def _outcome(fn: Function, values: list[object], width: int, bound: int) -> tupl
         return _VALUE, _eval_function(fn, [_copy(v) for v in values], width, bound)
     except _OutOfBound:
         return _OOB, None
-    except Exception as exc:  # noqa: BLE001 — any divergence in behavior counts
-        return _ERROR, type(exc).__name__
+    except Exception:  # noqa: BLE001 — every runtime error is treated alike,
+        return _ERROR, None  # matching the symbolic model's single guarded `error` condition
 
 
 def _copy(value: object) -> object:
@@ -362,12 +367,12 @@ def _compare(
         return None  # at least one function runs past the bound here — not in scope
     if kind_o == _VALUE and kind_c == _VALUE and out_o == out_c:
         return None
-    if kind_o == _ERROR and kind_c == _ERROR and out_o == out_c:
-        return None  # both raise the same exception — equivalent on this input
+    if kind_o == _ERROR and kind_c == _ERROR:
+        return None  # both raise — treated as equivalent behavior on this input
 
     inputs = {p.name: _copy(v) for p, v in zip(original.params, values)}
     return Counterexample(
         inputs=inputs,
-        original_output=out_o if kind_o == _VALUE else f"<raises {out_o}>",
-        candidate_output=out_c if kind_c == _VALUE else f"<raises {out_c}>",
+        original_output=out_o if kind_o == _VALUE else "<raises>",
+        candidate_output=out_c if kind_c == _VALUE else "<raises>",
     )

@@ -18,7 +18,7 @@ The credibility of this tool is its honesty about what it does and doesn't do. v
 | --- | --- |
 | Pure, deterministic functions (no I/O, no global mutation) | Side effects, I/O, concurrency |
 | Bounded inputs: machine ints, bools, fixed-length lists, bounded strings | Floating-point exactness |
-| Integer/boolean arithmetic, comparisons, branches | Unbounded loops/recursion (only bounded, unrolled to depth `k`) |
+| Integer/boolean arithmetic, comparisons, branches | Recursion / function calls; unbounded loops (loops are bounded, unrolled to depth `k`) |
 | Bounded loops (`return`/`break`/`continue`), unrolled to depth `k` | Heap aliasing, full object semantics |
 | A **Python** subset, plus a **C** subset front end | Full language semantics |
 
@@ -38,7 +38,7 @@ Cheap checks first, expensive proof only when needed:
 
 1. **Differential testing** (`difftest.py`) — property-based random + boundary inputs. Kills obvious non-equivalence in milliseconds. A counterexample here ends the run.
 2. **Symbolic execution → SMT** (`symbolic.py` + `solver.py`) — translate both functions' bounded behavior into logical constraints, assert *inputs equal ∧ outputs differ*, and ask [Z3](https://github.com/Z3Prover/z3). `UNSAT` = equivalent within bound; `SAT` = the model decodes back to a concrete counterexample.
-3. **Bounded model checking** — unroll loops/recursion to depth `k`, verify up to that bound, report the bound.
+3. **Bounded model checking** — unroll loops to depth `k`, verify up to that bound, report the bound. (Recursion / function calls are out of scope.)
 
 ```
 input: fn_original, fn_candidate (source) + bound config
@@ -99,7 +99,7 @@ $ congruent original.py:f candidate.py:g --bound 8   # sum i  vs  sum (n-1-i)
 EQUIVALENT  (stage: symbolic, 0.01s)
   equivalent up to bound 8
   note: 32-bit two's-complement integers
-  note: holds where every loop runs within bound 8
+  note: holds within bound: loops up to 8 iterations
 ```
 
 And you can scope the question with a **precondition** — equivalence often only holds on part of the input domain:
@@ -120,10 +120,10 @@ And it reasons about `list[int]` inputs — here it proves a hand-written count 
 ```console
 $ congruent original.py:f candidate.py:g          # len(xs)  vs  count loop
 EQUIVALENT  (stage: symbolic, 0.00s)
-  note: holds within bound: lists up to length 8, loops up to 8 iterations
+  note: holds within bound: lists/strings up to length 8, loops up to 8 iterations
 ```
 
-> **Status: M0–M6 complete.** The differential stage catches counterexamples
+> **Status: M0–M7 complete.** The differential stage catches counterexamples
 > (overflow included) under a fixed-width integer model; the symbolic stage lowers
 > both functions to Z3 bitvector expressions and returns `EQUIVALENT` (UNSAT), a
 > `COUNTEREXAMPLE` (SAT, decoded to concrete inputs), or `UNKNOWN`. Supported:
@@ -157,7 +157,7 @@ congruent path/to/original.py:func_name path/to/candidate.py:func_name --bound 8
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--bound N` | `8` | Loop/recursion unroll depth and array-length bound |
+| `--bound N` | `8` | Loop unroll depth and list/string-length bound |
 | `--int-width W` | `32` | Bit width for the fixed-width integer model |
 | `--assume EXPR` | — | Precondition on the inputs, e.g. `--assume 'n >= 0'` (repeatable) |
 | `--no-minimize` | off | Report the first counterexample found, not the smallest |
@@ -209,7 +209,7 @@ with zero unsound verdicts; a small deterministic batch runs in the test suite.
 
 ## Roadmap & progress
 
-- [ROADMAP.md](ROADMAP.md) — milestones M0→M4 and the out-of-scope list as future work.
+- [ROADMAP.md](ROADMAP.md) — milestones M0→M7 and the out-of-scope list as future work.
 
 ## License
 

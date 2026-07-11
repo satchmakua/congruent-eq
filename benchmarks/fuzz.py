@@ -1,8 +1,11 @@
 """Self-validating fuzzer — the strongest soundness check in the project.
 
-Generate random function pairs (straight-line expressions and accumulator loops
-with break/continue), ask Congruent for a verdict, then *independently* validate
-it against the concrete fixed-width interpreter (the ground truth):
+Generate random function pairs across the whole feature surface (straight-line
+integer expressions, accumulator loops with break/continue, list reductions —
+including iteration over *computed* sequences — list map/filter, and string
+functions with non-ASCII input), ask Congruent for a verdict, then
+*independently* validate it against the concrete fixed-width interpreter (ground
+truth):
 
   - EQUIVALENT     -> the two must agree on many random inputs
   - COUNTEREXAMPLE -> the reported input must actually make them diverge
@@ -33,9 +36,10 @@ WIDTH = 32
 BOUND = 5
 IMIN, IMAX = _int_min_max(WIDTH)
 _LEAVES = [0, 1, -1, 2, 3, IMAX, IMIN, IMAX - 1]
+_STR_CHARS = "abé"  # includes a non-ASCII char so the string domain is exercised
 
 
-# --- random expression / function generation -------------------------------
+# --- random expression generation ------------------------------------------
 
 def _rnd_int(rng, depth, names):
     if depth <= 0 or rng.random() < 0.4:
@@ -60,16 +64,18 @@ def _rnd_bool(rng, depth, names):
     return ir.UnaryOp("not", _rnd_bool(rng, depth - 1, names))
 
 
-_EXPR_PARAMS = ["x", "y", "z"]
-_LOOP_PARAMS = ["n", "x", "y"]  # n drives `for i in range(n)`
+def _fn(name, params, ret, body):
+    return ir.Function(name, [ir.Param(p, t) for p, t in params], ret, body)
 
 
-def _expr_fn(name, body):
-    params = [ir.Param(p, "int") for p in _EXPR_PARAMS]
-    return ir.Function(name, params, "int", (ir.Return(body),))
+# --- family generators (name, param-types) ---------------------------------
+
+def _expr(name, rng):
+    p = ["x", "y", "z"]
+    return _fn(name, [(n, "int") for n in p], "int", (ir.Return(_rnd_int(rng, rng.randint(1, 4), p)),))
 
 
-def _loop_fn(name, rng):
+def _loop(name, rng):
     names = ["i", "total", "x", "y"]
     inner = []
     if rng.random() < 0.5:
@@ -77,36 +83,91 @@ def _loop_fn(name, rng):
         inner.append(ir.If(cond, (rng.choice([ir.Break(), ir.Continue()]),), ()))
     inner.append(ir.Assign("total", ir.BinOp(rng.choice(["+", "-", "*"]),
                                              ir.Name("total"), _rnd_int(rng, rng.randint(1, 3), names))))
-    body = (
-        ir.Assign("total", ir.Const(0, "int")),
-        ir.For("i", ir.Const(0, "int"), ir.Name("n"), tuple(inner)),
-        ir.Return(ir.Name("total")),
-    )
-    return ir.Function(name, [ir.Param(p, "int") for p in _LOOP_PARAMS], "int", body)
+    body = (ir.Assign("total", ir.Const(0, "int")),
+            ir.For("i", ir.Const(0, "int"), ir.Name("n"), tuple(inner)),
+            ir.Return(ir.Name("total")))
+    return _fn(name, [("n", "int"), ("x", "int"), ("y", "int")], "int", body)
+
+
+def _list_reduce(name, rng):
+    names = ["x", "total", "y"]
+    # iterate either the input list or a COMPUTED sequence (exercises in-bound check)
+    iterable = ir.Name("xs")
+    if rng.random() < 0.4:
+        iterable = ir.BinOp("+", ir.Name("xs"), ir.ListLit((_rnd_int(rng, 1, ["y"]),)))
+    inner = []
+    if rng.random() < 0.4:
+        inner.append(ir.If(ir.Compare(rng.choice(["<", ">"]), ir.Name("x"), ir.Const(0, "int")),
+                           (rng.choice([ir.Break(), ir.Continue()]),), ()))
+    inner.append(ir.Assign("total", ir.BinOp(rng.choice(["+", "-", "*"]), ir.Name("total"),
+                                             _rnd_int(rng, rng.randint(1, 2), names))))
+    body = (ir.Assign("total", ir.Const(0, "int")),
+            ir.ForEach("x", iterable, tuple(inner)),
+            ir.Return(ir.Name("total")))
+    return _fn(name, [("xs", "list[int]"), ("y", "int")], "int", body)
+
+
+def _list_map(name, rng):
+    build = ir.Assign("r", ir.BinOp("+", ir.Name("r"), ir.ListLit((_rnd_int(rng, rng.randint(1, 2), ["x"]),))))
+    if rng.random() < 0.5:
+        inner = (ir.If(ir.Compare(rng.choice(["<", ">", "==", ">="]), ir.Name("x"), ir.Const(rng.choice([0, 1]), "int")),
+                       (build,), ()),)
+    else:
+        inner = (build,)
+    body = (ir.Assign("r", ir.ListLit(())), ir.ForEach("x", ir.Name("xs"), inner), ir.Return(ir.Name("r")))
+    return _fn(name, [("xs", "list[int]")], "list[int]", body)
+
+
+def _str_count(name, rng):
+    lit = ir.StrLit(rng.choice(list(_STR_CHARS)))
+    inner = (ir.If(ir.Compare(rng.choice(["==", "!="]), ir.Name("ch"), lit),
+                   (ir.Assign("c", ir.BinOp("+", ir.Name("c"), ir.Const(1, "int"))),), ()),)
+    body = (ir.Assign("c", ir.Const(0, "int")), ir.ForEach("ch", ir.Name("s"), inner), ir.Return(ir.Name("c")))
+    return _fn(name, [("s", "str")], "int", body)
+
+
+def _str_concat(name, rng):
+    parts = [ir.Name("s"), ir.Name("t"), ir.StrLit(rng.choice(["", "a", "é"]))]
+    rng.shuffle(parts)
+    expr = parts[0]
+    for p in parts[1:]:
+        expr = ir.BinOp("+", expr, p)
+    return _fn(name, [("s", "str"), ("t", "str")], "str", (ir.Return(expr),))
+
+
+FAMILIES = [_expr, _loop, _list_reduce, _list_map, _str_count, _str_concat]
 
 
 # --- concrete validation ---------------------------------------------------
+
+def _gen_arg(rng, type_name):
+    if type_name == "list[int]":
+        return [rng.choice([0, 1, -1, 2, IMAX, IMIN, rng.randint(IMIN, IMAX)]) for _ in range(rng.randint(0, BOUND))]
+    if type_name == "str":
+        return "".join(rng.choice(_STR_CHARS) for _ in range(rng.randint(0, BOUND)))
+    return rng.randint(IMIN, IMAX)
+
 
 def _outcome(fn, args):
     try:
         return ("val", _eval_function(fn, args, WIDTH, BOUND))
     except _OutOfBound:
         return ("oob", None)
-    except Exception as exc:  # noqa: BLE001 — any divergence in behavior counts
-        return ("err", type(exc).__name__)
+    except Exception:  # noqa: BLE001 — any raise counts as one "error" behavior
+        return ("err", None)
 
 
-def _violation(f, g, verdict, params, rng, sample):
+def _violation(f, g, verdict, param_types, param_names, rng, sample):
     if verdict.status is Status.EQUIVALENT:
         for _ in range(sample):
-            args = [(rng.randint(0, BOUND) if p == "n" else rng.randint(IMIN, IMAX)) for p in params]
+            args = [_gen_arg(rng, t) for t in param_types]
             of, og = _outcome(f, args), _outcome(g, args)
             if "oob" in (of[0], og[0]):
                 continue  # outside the bounded domain
             if of != og:
                 return ("FALSE EQUIVALENT", args, of, og)
     elif verdict.status is Status.COUNTEREXAMPLE:
-        args = [verdict.counterexample.inputs[p] for p in params]
+        args = [verdict.counterexample.inputs[n] for n in param_names]
         of, og = _outcome(f, args), _outcome(g, args)
         if of[0] != "oob" and og[0] != "oob" and of == og:
             return ("FALSE COUNTEREXAMPLE", args, of, og)
@@ -118,23 +179,18 @@ def run(trials: int = 200, seed: int = 0, sample: int = 200, report=lambda _m: N
     rng = random.Random(seed)
     violations = 0
     for i in range(trials):
-        loop = rng.random() < 0.5
-        if loop:
-            params = _LOOP_PARAMS
-            f = _loop_fn("f", rng)
-            g = f if rng.random() < 0.4 else _loop_fn("g", rng)
-        else:
-            params = _EXPR_PARAMS
-            body = _rnd_int(rng, rng.randint(1, 4), _EXPR_PARAMS)
-            f = _expr_fn("f", body)
-            g = f if rng.random() < 0.4 else _expr_fn("g", _rnd_int(rng, rng.randint(1, 4), _EXPR_PARAMS))
+        family = rng.choice(FAMILIES)
+        f = family("f", rng)
+        g = f if rng.random() < 0.4 else family("g", rng)
+        param_types = [p.type_name for p in f.params]
+        param_names = [p.name for p in f.params]
         try:
-            verdict = check(f, g, bound=BOUND, int_width=WIDTH, trials=150, seed=i)
+            verdict = check(f, g, bound=BOUND, int_width=WIDTH, trials=120, seed=i)
         except Exception as exc:  # noqa: BLE001
             violations += 1
             report(f"[{i}] CRASH {type(exc).__name__}: {exc}")
             continue
-        bad = _violation(f, g, verdict, params, rng, sample)
+        bad = _violation(f, g, verdict, param_types, param_names, rng, sample)
         if bad:
             violations += 1
             report(f"[{i}] UNSOUND {bad[0]}: args={bad[1]} f={bad[2]} g={bad[3]}")

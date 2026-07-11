@@ -85,9 +85,11 @@ def check(
     from congruent.difftest import find_counterexample  # local import avoids a cycle
 
     assumptions = [f"{int_width}-bit two's-complement integers"]
+    # Only the original's precondition scopes the check; a candidate-introduced
+    # precondition is a behavioral change, surfaced as a counterexample instead.
     precond_texts: list[str] = []
-    for pc in (*original.preconditions, *candidate.preconditions):
-        if pc.text not in precond_texts:  # dedupe (both functions may declare it)
+    for pc in original.preconditions:
+        if pc.text not in precond_texts:
             precond_texts.append(pc.text)
     if precond_texts:
         assumptions.append("precondition: " + " and ".join(precond_texts))

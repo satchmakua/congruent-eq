@@ -45,6 +45,8 @@ from congruent.ir import Function
 
 _Env = dict  # name -> (z3.ExprRef | SymList)
 _TRUE = z3.BoolVal(True)
+_UNDEFINED = object()  # a name that is bound but has no sound value (e.g. a loop
+#                        variable after the loop); reading it declines to UNKNOWN.
 
 
 class UnsupportedForProof(Exception):
@@ -61,7 +63,8 @@ class SymList:
     """
 
     arr: z3.ArrayRef
-    length: z3.ExprRef  # BitVec; constrained 0 <= length <= bound at the query
+    length: z3.ExprRef  # BitVec; constrained 0 <= length <= cap at the query
+    cap: int            # static max length: how many array slots are meaningful
     kind: str = "int"  # "int" | "char"
 
 
@@ -107,28 +110,41 @@ def make_inputs(
             values.append(z3.Bool(f"in{i}"))
         elif param.type_name in ("list[int]", "str"):
             kind = "char" if param.type_name == "str" else "int"
+            if kind == "char" and int_width < 22:
+                # 0x10FFFF needs 21 bits; a signed BV needs >= 22 to hold it.
+                raise UnsupportedForProof("str needs int_width >= 22 to represent all code points")
             arr = z3.Array(f"in{i}", z3.BitVecSort(int_width), z3.BitVecSort(int_width))
             length = z3.BitVec(f"in{i}_len", int_width)
-            values.append(SymList(arr, length, kind))
+            values.append(SymList(arr, length, cap=bound, kind=kind))
             constraints.append(z3.And(zero <= length, length <= cap))
             if kind == "char":
-                # Constrain code points to ASCII so counterexamples decode cleanly.
-                ascii_max = z3.BitVecVal(127, int_width)
+                # Constrain code points to the valid Unicode range so the query
+                # explores every real character (not just ASCII) yet decodes cleanly.
+                # Capped by the int width so it stays representable for small widths.
+                point_max = z3.BitVecVal(min(0x10FFFF, (1 << (int_width - 1)) - 1), int_width)
                 for k in range(bound):
                     e = z3.Select(arr, z3.BitVecVal(k, int_width))
-                    constraints.append(z3.And(zero <= e, e <= ascii_max))
+                    constraints.append(z3.And(zero <= e, e <= point_max))
         else:
             raise UnsupportedForProof(f"parameter type {param.type_name!r} not modeled yet")
     return values, constraints
 
 
 def lower_preconditions(
-    function: Function, input_symbols: list, int_width: int
+    function: Function, input_symbols: list, int_width: int, bound: int
 ) -> list[z3.BoolRef]:
-    """Lower a function's `assume(...)` preconditions to Z3 boolean constraints."""
+    """Lower a function's `assume(...)` preconditions to Z3 domain constraints.
+
+    An input where evaluating a precondition would itself raise (e.g.
+    `assume(100 // x < 0)` at x == 0) is out of domain, exactly as difftest
+    excludes it — so the constraints also require that no precondition errors.
+    """
     env: _Env = {p.name: sym for p, sym in zip(function.params, input_symbols)}
-    ctx = _Ctx(int_width, 0)  # bound irrelevant; error_terms here are discarded
-    return [_as_bool(_eval(pc.expr, env, ctx, _TRUE)) for pc in function.preconditions]
+    ctx = _Ctx(int_width, bound)
+    constraints = [_as_bool(_eval(pc.expr, env, ctx, _TRUE)) for pc in function.preconditions]
+    if ctx.error_terms:
+        constraints.append(z3.Not(z3.Or(ctx.error_terms)))
+    return constraints
 
 
 def summarize(
@@ -184,12 +200,15 @@ def _exec_seq(stmts, env: _Env, ctx: _Ctx, pc, returned, retval, broken, continu
             else_env, returned, retval, broken, continued = _exec_seq(
                 stmt.orelse, cur, ctx, z3.And(live, z3.Not(cond)), returned, retval, broken, continued
             )
-            for name in _assigned_names(stmt.body) | _assigned_names(stmt.orelse):
+            for name in _touched_names(stmt.body) | _touched_names(stmt.orelse):
                 then_v = then_env.get(name, cur.get(name))
                 else_v = else_env.get(name, cur.get(name))
-                if then_v is None or else_v is None:
-                    raise UnsupportedForProof(f"variable {name!r} may be undefined after an if")
-                cur[name] = _merge(cond, then_v, else_v, ctx.w)
+                # Undefined on either path (unset, or a loop var that fell out of
+                # scope) makes the merged binding undefined — reading it later declines.
+                if then_v is None or else_v is None or then_v is _UNDEFINED or else_v is _UNDEFINED:
+                    cur[name] = _UNDEFINED
+                else:
+                    cur[name] = _merge(cond, then_v, else_v, ctx.w)
 
         elif isinstance(stmt, ir.For):
             # A nested loop manages its own break/continue; the outer ones pass through.
@@ -209,11 +228,11 @@ def _exec_seq(stmts, env: _Env, ctx: _Ctx, pc, returned, retval, broken, continu
 # and a fresh `continued` per iteration. `return` still propagates out via
 # `returned`. The body runs only where guard ∧ ¬returned ∧ ¬broken holds.
 
-def _run_iterations(loop, cur, ctx, pc, returned, retval, idx_of, guard_of):
+def _run_iterations(loop, cur, ctx, pc, returned, retval, idx_of, guard_of, iterations=None):
     written = _require_initialized(loop, cur)
     broken = z3.BoolVal(False)
     cur = dict(cur)
-    for k in range(ctx.bound):
+    for k in range(ctx.bound if iterations is None else iterations):
         guard = guard_of(k)
         body_env = dict(cur)
         body_env[loop.var] = idx_of(k)
@@ -222,6 +241,11 @@ def _run_iterations(loop, cur, ctx, pc, returned, retval, idx_of, guard_of):
         )
         for name in written:
             cur[name] = _merge(guard, after[name], cur[name], ctx.w)
+    # The loop variable's value after the loop is not soundly modeled (its final
+    # value depends on trip count, and differs between Python and C), so mark it
+    # undefined: any later read — in this or an enclosing scope — declines to
+    # UNKNOWN rather than reverting to a stale (e.g. pre-loop parameter) value.
+    cur[loop.var] = _UNDEFINED
     return cur, returned, retval
 
 
@@ -251,9 +275,11 @@ def _unroll_foreach(loop: ir.ForEach, env: _Env, ctx: _Ctx, pc, returned, retval
     if not isinstance(seq, SymList):
         raise UnsupportedForProof("can only iterate a list[int]")
 
-    # No extra in-bound assumption: list length is bounded to [0, bound] by
-    # make_inputs, so `bound` unrollings cover every valid list. Iterating a
-    # string yields 1-char strings; iterating a list yields int elements.
+    # Unroll once per possible element: `seq.cap` is the sequence's static max
+    # length (bound for an input list, but larger for a COMPUTED sequence such as
+    # xs + xs or xs + [1]). Because length <= cap holds by construction, iterating
+    # `cap` times with the `k < length` guard covers every real element — no tail
+    # is dropped and no in-scope input is excluded.
     def element(k: int):
         idx = z3.BitVecVal(k, ctx.w)
         return _char_at(seq, idx, ctx.w) if seq.kind == "char" else z3.Select(seq.arr, idx)
@@ -262,6 +288,7 @@ def _unroll_foreach(loop: ir.ForEach, env: _Env, ctx: _Ctx, pc, returned, retval
         loop, env, ctx, pc, returned, retval,
         idx_of=element,
         guard_of=lambda k: z3.ULT(z3.BitVecVal(k, ctx.w), seq.length),  # k < len
+        iterations=seq.cap,
     )
 
 
@@ -278,6 +305,7 @@ def _require_initialized(loop, env: _Env) -> set[str]:
 
 
 def _assigned_names(stmts) -> set[str]:
+    """Accumulator variables written in a block (loop variables excluded)."""
     names: set[str] = set()
     for stmt in stmts:
         if isinstance(stmt, ir.Assign):
@@ -289,6 +317,18 @@ def _assigned_names(stmts) -> set[str]:
     return names
 
 
+def _touched_names(stmts) -> set[str]:
+    """Names whose binding a block may change, including loop variables (which
+    become undefined after their loop). Used to propagate that through if-merges."""
+    names = _assigned_names(stmts)
+    for stmt in stmts:
+        if isinstance(stmt, (ir.For, ir.ForEach)):
+            names |= {stmt.var} | _touched_names(stmt.body)
+        elif isinstance(stmt, ir.If):
+            names |= _touched_names(stmt.body) | _touched_names(stmt.orelse)
+    return names
+
+
 # --- expression evaluation -------------------------------------------------
 # `pc` is the path condition under which `node` is evaluated; runtime-error
 # terms are guarded by it so an error in a not-taken branch never fires.
@@ -297,6 +337,8 @@ def _eval(node: ir.Expr, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> z3.ExprRef:
     if isinstance(node, ir.Name):
         if node.id not in env:
             raise UnsupportedForProof(f"reference to unbound name {node.id!r}")
+        if env[node.id] is _UNDEFINED:  # e.g. a loop variable read after its loop
+            raise UnsupportedForProof(f"value of {node.id!r} after a loop is not modeled")
         return env[node.id]
 
     if isinstance(node, ir.Const):
@@ -354,6 +396,8 @@ def _eval(node: ir.Expr, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> z3.ExprRef:
         return _build_seq([_eval(e, env, ctx, pc) for e in node.elements], ctx.w, "int")
 
     if isinstance(node, ir.StrLit):
+        if ctx.w < 22:  # code points would wrap; decline rather than mis-model
+            raise UnsupportedForProof("str needs int_width >= 22 to represent all code points")
         return _build_seq([z3.BitVecVal(ord(c), ctx.w) for c in node.value], ctx.w, "char")
 
     raise AssertionError(f"unhandled expression node: {node!r}")
@@ -367,13 +411,13 @@ def _eval_binop(node: ir.BinOp, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> z3.Expr
         # Fast path: appending a literal is a couple of Stores at the tail, far
         # cheaper than the general capacity reconstruction.
         if isinstance(node.right, ir.ListLit):
-            return _append(left, [_eval(e, env, ctx, pc) for e in node.right.elements], ctx)
+            return _append(left, [_eval(e, env, ctx, pc) for e in node.right.elements], ctx, pc)
         if isinstance(node.right, ir.StrLit):
-            return _append(left, [z3.BitVecVal(ord(c), ctx.w) for c in node.right.value], ctx)
+            return _append(left, [z3.BitVecVal(ord(c), ctx.w) for c in node.right.value], ctx, pc)
         right = _eval(node.right, env, ctx, pc)
         if not isinstance(right, SymList):
             raise UnsupportedForProof("unsupported sequence operation")
-        return _concat(left, right, ctx)
+        return _concat(left, right, ctx, pc)
 
     right = _eval(node.right, env, ctx, pc)
     if isinstance(right, SymList):
@@ -408,6 +452,10 @@ def _eval_compare(node: ir.Compare, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> z3.
         # Sequence comparison (str/list): equality only.
         if not (isinstance(left, SymList) and isinstance(right, SymList) and op in ("==", "!=")):
             raise UnsupportedForProof("only == / != is supported on sequences")
+        if left.kind != right.kind:
+            # A str and a list are different types, so in Python they are never
+            # equal regardless of contents (`"a" == [97]` is False).
+            return z3.BoolVal(op == "!=")
         equal = _seq_eq(left, right, ctx)
         return equal if op == "==" else z3.Not(equal)
     if op in ("==", "!="):
@@ -459,11 +507,15 @@ def _as_bv(e: z3.ExprRef, w: int) -> z3.ExprRef:
 
 
 def _merge(cond: z3.ExprRef, then_val, else_val, w: int):
+    if then_val is _UNDEFINED or else_val is _UNDEFINED:
+        return _UNDEFINED  # undefined on either path -> undefined (declines on read)
     if isinstance(then_val, SymList) or isinstance(else_val, SymList):
+        caps = [v.cap for v in (then_val, else_val) if isinstance(v, SymList)]
         return SymList(
             z3.If(cond, then_val.arr, else_val.arr),
             z3.If(cond, then_val.length, else_val.length),
-            then_val.kind if isinstance(then_val, SymList) else else_val.kind,
+            cap=max(caps),
+            kind=then_val.kind if isinstance(then_val, SymList) else else_val.kind,
         )
     if z3.is_bool(then_val) and z3.is_bool(else_val):
         return z3.If(cond, then_val, else_val)
@@ -474,55 +526,82 @@ def _merge(cond: z3.ExprRef, then_val, else_val, w: int):
 
 def _empty_seq(width: int, kind: str) -> SymList:
     arr = z3.K(z3.BitVecSort(width), z3.BitVecVal(0, width))  # all-zero array
-    return SymList(arr, z3.BitVecVal(0, width), kind)
+    return SymList(arr, z3.BitVecVal(0, width), cap=0, kind=kind)
 
 
 def _build_seq(elements, width: int, kind: str) -> SymList:
     arr = z3.K(z3.BitVecSort(width), z3.BitVecVal(0, width))
     for i, element in enumerate(elements):
         arr = z3.Store(arr, z3.BitVecVal(i, width), _as_bv(element, width))
-    return SymList(arr, z3.BitVecVal(len(elements), width), kind)
+    return SymList(arr, z3.BitVecVal(len(elements), width), cap=len(elements), kind=kind)
 
 
 def _char_at(seq: SymList, idx: z3.ExprRef, width: int) -> SymList:
     """A single character of a string: a length-1 `str` value."""
     arr = z3.Store(z3.K(z3.BitVecSort(width), z3.BitVecVal(0, width)), z3.BitVecVal(0, width),
                    z3.Select(seq.arr, idx))
-    return SymList(arr, z3.BitVecVal(1, width), "char")
+    return SymList(arr, z3.BitVecVal(1, width), cap=1, kind="char")
+
+
+def _seq_cap_ceiling(ctx: _Ctx) -> int:
+    """Absolute slot ceiling for a computed sequence. A concat/append whose static
+    max length would exceed this *declines* (UnsupportedForProof -> UNKNOWN) rather
+    than blow up the solver. It only bites pathological growth (e.g. doubling a list
+    inside a loop); realistic concat chains and appends stay far below."""
+    return max(64, 8 * ctx.bound)
+
+
+def _checked_cap(cap: int, ctx: _Ctx) -> int:
+    """The static max length of a computed sequence, or decline if it is too large.
+
+    Crucially this is the *exact* compositional max (sum of operand caps), never a
+    fixed multiple of `bound`: `length <= cap` then holds by construction, so the
+    capacity never has to be imposed as an assumption that could silently drop an
+    in-scope input from the query."""
+    if cap > _seq_cap_ceiling(ctx):
+        raise UnsupportedForProof(
+            f"computed sequence may reach length {cap}, over the {_seq_cap_ceiling(ctx)}-slot cap"
+        )
+    return cap
 
 
 def _seq_eq(a: SymList, b: SymList, ctx: _Ctx) -> z3.BoolRef:
-    """Sequence equality: same length and equal elements within the bound."""
+    """Sequence equality: same length and equal elements over the larger capacity."""
     same_elems = z3.And(
         [
             z3.Implies(
                 z3.ULT(z3.BitVecVal(k, ctx.w), a.length),
                 z3.Select(a.arr, z3.BitVecVal(k, ctx.w)) == z3.Select(b.arr, z3.BitVecVal(k, ctx.w)),
             )
-            for k in range(ctx.bound)
+            for k in range(max(a.cap, b.cap))
         ]
     )
     return z3.And(a.length == b.length, same_elems)
 
 
-def _append(a: SymList, elements, ctx: _Ctx) -> SymList:
+def _append(a: SymList, elements, ctx: _Ctx, pc) -> SymList:
     """`a + [e0, e1, ...]` — store each element at the running tail (cheap)."""
+    cap = _checked_cap(a.cap + len(elements), ctx)
     arr, length = a.arr, a.length
     for element in elements:
         arr = z3.Store(arr, length, _as_bv(element, ctx.w))
         length = length + z3.BitVecVal(1, ctx.w)
-    return SymList(arr, length, a.kind)
+    return SymList(arr, length, cap=cap, kind=a.kind)
 
 
-def _concat(a: SymList, b: SymList, ctx: _Ctx) -> SymList:
-    """General sequence concatenation. Builds slots 0..bound-1; results longer
-    than `bound` are ruled out of scope by the output-length bound in the query."""
+def _concat(a: SymList, b: SymList, ctx: _Ctx, pc) -> SymList:
+    """General sequence concatenation. Materializes exactly `a.cap + b.cap` slots —
+    the sequence's own static max length — so every populated slot is correct and
+    `length = a.length + b.length <= a.cap + b.cap` holds by construction, with no
+    capacity assumption that could exclude an in-scope input."""
+    cap = _checked_cap(a.cap + b.cap, ctx)
     arr = z3.K(z3.BitVecSort(ctx.w), z3.BitVecVal(0, ctx.w))
-    for k in range(ctx.bound):
+    length = a.length + b.length
+    for k in range(cap):
         kk = z3.BitVecVal(k, ctx.w)
         value = z3.If(z3.ULT(kk, a.length), z3.Select(a.arr, kk), z3.Select(b.arr, kk - a.length))
         arr = z3.Store(arr, kk, value)
-    return SymList(arr, a.length + b.length, a.kind)
+    return SymList(arr, length, cap=cap, kind=a.kind)
 
 
 # --- return-value kinds ----------------------------------------------------
