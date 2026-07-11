@@ -260,6 +260,162 @@ def test_int_annotated_function_returning_a_sequence_does_not_crash() -> None:
     assert _v(a, b, bound=2, int_width=8).status in (Status.UNKNOWN, Status.EQUIVALENT)
 
 
+# --- fifth round (real-Python-grounded multi-agent audit) ------------------
+
+def test_mixed_kind_branch_merge_does_not_crash() -> None:
+    # `y = xs` on one branch, `y = 0` on the other: _merge got a SymList and a scalar
+    # and dereferenced `.arr` on the scalar. Must not crash.
+    a = "def f(xs: list[int]) -> int:\n    if xs:\n        y = xs\n    else:\n        y = 0\n    return 5"
+    assert _v(a, a.replace("def f", "def g"), bound=2, int_width=8).status is Status.EQUIVALENT
+
+
+def test_str_list_branch_merge_is_not_a_false_counterexample() -> None:
+    # y is a str on one path and a list on the other; the merge relabeled its kind
+    # and mis-evaluated `y == s`, fabricating a divergence. Must not be a false CX.
+    a = ("def f(c: bool, s: str, xs: list[int]) -> bool:\n    if c:\n        y = s\n"
+         "    else:\n        y = xs\n    return y == s")
+    b = "def g(c: bool, s: str, xs: list[int]) -> bool:\n    return c"
+    assert _v(a, b, bound=2, int_width=32).status is not Status.COUNTEREXAMPLE
+
+
+def test_loop_accumulator_kind_change_does_not_crash() -> None:
+    a = "def f(xs: list[int]) -> int:\n    s = 0\n    for x in xs:\n        s = [x]\n    return len(s)"
+    assert _v(a, a.replace("def f", "def g"), bound=2, int_width=8).status is not Status.COUNTEREXAMPLE
+
+
+def test_sequence_used_as_scalar_declines_without_crashing() -> None:
+    # `-xs` and `xs[xs]` reach _as_bv with a SymList; must decline, not crash in z3.
+    for src in ("def f(xs: list[int]) -> int:\n    return -xs",
+                "def f(xs: list[int]) -> int:\n    return xs[xs]"):
+        assert _v(src, src.replace("def f", "def g"), bound=2, int_width=8).status is not Status.COUNTEREXAMPLE
+
+
+def test_empty_range_input_is_in_scope() -> None:
+    # `range(n)` with n < 0 runs 0 times (empty, in scope); excluding it hid a
+    # divergence -> false EQUIVALENT.
+    a = "def f(n: int) -> int:\n    s = 0\n    for i in range(n):\n        s = s + 1\n    return s"
+    b = ("def g(n: int) -> int:\n    s = 0\n    for i in range(n):\n        s = s + 1\n"
+         "    if n < 0:\n        s = 55\n    return s")
+    assert _v(a, b, bound=2, int_width=8).status is Status.COUNTEREXAMPLE
+
+
+def test_near_imax_range_bound_is_in_scope() -> None:
+    # range(a, 127) at a=126 runs 1 iteration; `start + bound` overflowed the width
+    # and wrongly excluded it -> false EQUIVALENT.
+    a = "def f(a: int) -> int:\n    s = 0\n    for i in range(a, 127):\n        s = s + 1\n    return s"
+    b = ("def g(a: int) -> int:\n    s = 0\n    for i in range(a, 127):\n        s = s + 1\n"
+         "    if a == 126:\n        s = 99\n    return s")
+    assert _v(a, b, bound=2, int_width=8).status is Status.COUNTEREXAMPLE
+
+
+def test_overflowing_loop_bound_stays_out_of_scope() -> None:
+    # range(n + 1) at n == imax overflows to a huge range -> out of scope, so the
+    # Gauss closed form stays provably equal to the accumulating loop.
+    a = "def f(n: int) -> int:\n    assume(n >= 0)\n    return n * (n + 1) // 2"
+    b = "def g(n: int) -> int:\n    total = 0\n    for i in range(n + 1):\n        total = total + i\n    return total"
+    assert _v(a, b, bound=8, int_width=32).status is Status.EQUIVALENT
+
+
+def test_falling_off_the_end_is_none_not_an_error() -> None:
+    # Falling off the end returns None (a value), distinct from a raised exception.
+    falloff = "def f(x: int) -> int:\n    if x > 0:\n        return 1"
+    raises = "def g(x: int) -> int:\n    if x > 0:\n        return 1\n    return 1 // 0"
+    value = "def g(x: int) -> int:\n    return 5"
+    assert _v(falloff, raises).status is Status.COUNTEREXAMPLE                       # None != exception
+    assert _v(falloff, value).status is Status.COUNTEREXAMPLE                        # None != 5
+    assert _v(falloff, falloff.replace("def f", "def g")).status is Status.EQUIVALENT  # None == None
+
+
+# --- sixth round (real-Python audit of the round-5 fixes) ------------------
+
+def test_and_or_return_the_operand_value_not_a_bool() -> None:
+    # Python `x or 5` returns x or 5 (an operand), not True; the symbolic stage
+    # collapsed it to a bool -> false EQUIVALENT.
+    assert _v("def f(x: int) -> int:\n    return x or 5",
+              "def g(x: int) -> int:\n    return True", bound=2, int_width=8).status is Status.COUNTEREXAMPLE
+    assert _v("def f(x: int, y: int) -> int:\n    return x or y",
+              "def g(x: int, y: int) -> int:\n    return y or x", bound=2, int_width=8).status is Status.COUNTEREXAMPLE
+    # `5 and 3` is 3, not True -> equivalent to a literal 3 (was a false counterexample).
+    assert _v("def f() -> int:\n    return 5 and 3",
+              "def g() -> int:\n    return 3", bound=2, int_width=8).status is Status.EQUIVALENT
+    # and `x or 5` really is `x if x else 5`
+    assert _v("def f(x: int) -> int:\n    return x or 5",
+              "def g(x: int) -> int:\n    return x if x else 5", bound=2, int_width=8).status is Status.EQUIVALENT
+
+
+def test_and_or_truth_value_in_boolean_context_is_unchanged() -> None:
+    # In a condition the truthiness is what matters, and must stay correct.
+    assert _v("def f(x: int) -> int:\n    if x or 5:\n        return 1\n    return 0",
+              "def g(x: int) -> int:\n    return 1", bound=2, int_width=8).status is Status.EQUIVALENT
+
+
+def test_mixed_type_ternary_declines_without_crashing() -> None:
+    # `x if x > 0 else "a"` (int/str) and `xs if c else 5` (list/scalar) yield an
+    # unmodelable value; must decline, not crash the solver via the _UNDEFINED sentinel.
+    for src in ('def f(x: int) -> int:\n    return x if x > 0 else "a"',
+                "def f(c: bool, xs: list[int]) -> int:\n    return xs if c else 5",
+                "def f(x: int) -> int:\n    return [1] if x > 0 else 2"):
+        assert _v(src, src.replace("def f", "def g"), bound=2, int_width=32).status is not Status.COUNTEREXAMPLE
+
+
+def test_range_bound_at_the_width_edge_is_in_scope() -> None:
+    # `range(126, 128)` at width 8 runs 2 iterations (i=126, 127; the exclusive bound
+    # 128 == imax+1 is fine). It must be modeled (not wrapped to an empty range): adding
+    # 100 twice diverges from x, so it is a real counterexample.
+    a = "def f(x: int) -> int:\n    total = x\n    for i in range(126, 128):\n        total = total + 100\n    return total"
+    b = "def g(x: int) -> int:\n    return x"
+    assert _v(a, b, bound=2, int_width=8).status is Status.COUNTEREXAMPLE
+    # the same 2-iteration loop that leaves the value unchanged is proven equivalent.
+    assert _v(a.replace("+ 100", "+ 0"), b, bound=2, int_width=8).status is Status.EQUIVALENT
+
+
+# --- seventh round (audit of the round-6 fixes) ----------------------------
+
+def test_non_int_operand_where_int_required_is_a_type_error() -> None:
+    # A str where an int is required is a Python TypeError; the interpreter must not
+    # int()-coerce it (int('0')==0) and fabricate a divergence.
+    for a, b, iw in [
+        ('def f(xs: list[int]) -> int:\n    return xs["0"]', 'def g(xs: list[int]) -> int:\n    return xs["1"]', 32),
+        ('def f(s: str) -> int:\n    return -("5" + s)', 'def g(s: str) -> int:\n    return -("6" + s)', 32),
+    ]:
+        assert _v(a, b, bound=2, int_width=iw).status is not Status.COUNTEREXAMPLE
+
+
+def test_len_is_fixed_width_wrapped() -> None:
+    # len(xs + xs) must wrap like len(xs) + len(xs) (both 2*len, same 2s-complement).
+    a = "def f(xs: list[int]) -> int:\n    return len(xs + xs)"
+    b = "def g(xs: list[int]) -> int:\n    return len(xs) + len(xs)"
+    assert _v(a, b, bound=64, int_width=8).status is Status.EQUIVALENT
+
+
+def test_candidate_precondition_that_raises_is_a_divergence() -> None:
+    # A candidate assume() whose argument raises (assume(xs[0] > 0) on []) is real
+    # behavior — the candidate raises where the original returns a value.
+    a = "def f(xs: list[int]) -> int:\n    return len(xs)"
+    b = "def g(xs: list[int]) -> int:\n    assume(xs[0] > 0)\n    return len(xs)"
+    verdict = _v(a, b, bound=2, int_width=8)
+    assert verdict.status is Status.COUNTEREXAMPLE
+    assert verdict.counterexample.inputs["xs"] == []
+
+
+def test_loop_bound_at_width_edge_runs_the_real_trip_count() -> None:
+    # range(a, a+1) at a=127 runs exactly 1 iteration (i=127); the exclusive bound
+    # a+1 == 128 overflowing the width must not make it an empty (0-trip) loop.
+    a = "def f(a: int) -> int:\n    s = 0\n    for i in range(a, a + 1):\n        s = s + i\n    return s"
+    b = "def g(a: int) -> int:\n    if a == 127:\n        return 0\n    return a"
+    verdict = _v(a, b, bound=2, int_width=8)
+    assert verdict.status is Status.COUNTEREXAMPLE
+    assert verdict.counterexample.inputs["a"] == 127
+
+
+def test_overflowing_division_loop_bound_stays_out_of_scope() -> None:
+    # range(0, x // -1) at x == imin: x//-1 is 128 (a huge trip count), out of scope —
+    # not an empty range from a wrapped bound. So the pair is equivalent in scope.
+    a = "def f(x: int) -> int:\n    c = 0\n    for i in range(0, x // (0 - 1)):\n        c = c + 1\n    return c"
+    b = "def g(x: int) -> int:\n    return (0 - x) if x < 0 else 0"
+    assert _v(a, b, bound=2, int_width=8).status is Status.EQUIVALENT
+
+
 def test_sequence_truthiness_is_nonempty() -> None:
     # `if xs:` / `not xs` used to crash (_as_bool couldn't handle a SymList). A
     # sequence is truthy iff non-empty, exactly like `len(xs) > 0`.

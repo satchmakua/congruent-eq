@@ -74,6 +74,7 @@ class Summary:
 
     output: z3.ExprRef
     error: z3.BoolRef              # condition under which the function raises at runtime
+    fell_off: z3.BoolRef           # reached the end without returning -> Python None (a value)
     assumptions: list[z3.BoolRef]  # in-bound conditions accumulated from loops
     unrolled: bool                 # whether any loop was unrolled (verdict is bounded)
 
@@ -147,6 +148,19 @@ def lower_preconditions(
     return constraints
 
 
+def precondition_error(function: Function, input_symbols: list, int_width: int, bound: int) -> z3.BoolRef:
+    """The condition under which evaluating this function's precondition ARGUMENTS
+    raises (e.g. `assume(xs[0] > 0)` on an empty list). A *candidate*'s precondition
+    does not narrow the domain, but Python still evaluates its argument — a raise there
+    is real behavior (a divergence), so the caller folds this into the candidate's error.
+    """
+    env: _Env = {p.name: sym for p, sym in zip(function.params, input_symbols)}
+    ctx = _Ctx(int_width, bound)
+    for pc in function.preconditions:
+        _eval(pc.expr, env, ctx, _TRUE)
+    return z3.Or(ctx.error_terms) if ctx.error_terms else z3.BoolVal(False)
+
+
 def summarize(
     function: Function, input_symbols: list, int_width: int, bound: int
 ) -> Summary:
@@ -160,10 +174,12 @@ def summarize(
         function.body, env, ctx, _TRUE, z3.BoolVal(False), retval0, z3.BoolVal(False), z3.BoolVal(False)
     )
 
-    # Falling off the end without returning is itself a runtime error (Python
-    # would return None), so it's folded into the error condition.
-    error = z3.Or(ctx.error_terms + [z3.Not(returned)])
-    return Summary(retval, error, ctx.assumptions, ctx.unrolled)
+    # A runtime error (bad index, /0, ...) raises. Falling off the end without
+    # returning is DIFFERENT: Python yields None, a value — modeled separately so it
+    # is not conflated with a raised exception (which would hide real divergences).
+    error = z3.Or(ctx.error_terms) if ctx.error_terms else z3.BoolVal(False)
+    fell_off = z3.And(z3.Not(error), z3.Not(returned))
+    return Summary(retval, error, fell_off, ctx.assumptions, ctx.unrolled)
 
 
 # --- statement execution (single state-threading pass) ----------------------
@@ -255,23 +271,61 @@ def _run_iterations(loop, cur, ctx, pc, returned, retval, idx_of, guard_of, iter
     return cur, returned, retval
 
 
+def _bound_wide(node, env: _Env, ctx: _Ctx, pc, wide: int):
+    """Evaluate an integer loop-bound expression in a WIDE bitvector so it yields the
+    real (un-wrapped) value. This lets the trip count and loop-variable range be judged
+    against the true bounds — e.g. `range(a, a+1)` at a==imax really runs one iteration
+    (a+1 is imax+1, a valid exclusive bound), while `range(n+1)` at n==imax really has
+    an enormous trip count and is out of scope."""
+    w = ctx.w
+    if isinstance(node, ir.Const):
+        return z3.BitVecVal(node.value, wide)
+    if isinstance(node, ir.Len):
+        v = _eval(node, env, ctx, pc)
+        if not isinstance(v, SymList):
+            raise UnsupportedForProof("len() of a non-sequence value")
+        return z3.SignExt(wide - w, v.length)
+    if isinstance(node, ir.UnaryOp) and node.op == "-":
+        return -_bound_wide(node.operand, env, ctx, pc, wide)
+    if isinstance(node, ir.BinOp) and node.op in ("+", "-", "*", "//", "%"):
+        a = _bound_wide(node.left, env, ctx, pc, wide)
+        b = _bound_wide(node.right, env, ctx, pc, wide)
+        if node.op == "+":
+            return a + b
+        if node.op == "-":
+            return a - b
+        if node.op == "*":
+            return a * b
+        ctx.error_terms.append(z3.And(pc, b == z3.BitVecVal(0, wide)))  # division by zero
+        return _floordiv(a, b) if node.op == "//" else _floormod(a, b)
+    # Name or exotic: a stored value is already in range, so sign-extend it.
+    return z3.SignExt(wide - w, _as_bv(_eval(node, env, ctx, pc), w))
+
+
 def _unroll_for(loop: ir.For, env: _Env, ctx: _Ctx, pc, returned, retval):
     ctx.unrolled = True
-    start = _as_bv(_eval(loop.start, env, ctx, pc), ctx.w)
-    stop = _as_bv(_eval(loop.stop, env, ctx, pc), ctx.w)
+    w = ctx.w
+    wide = 2 * w + 32  # wide enough that realistic bounds don't wrap
+    rstart = _bound_wide(loop.start, env, ctx, pc, wide)
+    rstop = _bound_wide(loop.stop, env, ctx, pc, wide)
+    start_fixed = z3.Extract(w - 1, 0, rstart)  # low w bits; equals rstart when in range
 
     cur, returned, retval = _run_iterations(
         loop, env, ctx, pc, returned, retval,
-        idx_of=lambda k: start + z3.BitVecVal(k, ctx.w),
-        guard_of=lambda k: (start + z3.BitVecVal(k, ctx.w)) < stop,  # signed: start+k < stop
+        idx_of=lambda k: start_fixed + z3.BitVecVal(k, w),  # loop var (representable within scope)
+        guard_of=lambda k: rstart + z3.BitVecVal(k, wide) < rstop,  # k-th iteration exists (real)
     )
 
-    # In-bound assumption (guarded by pc): the loop runs 0..bound times and its
-    # index window does not wrap, i.e. stop in [start, start + bound] with no
-    # overflow. The no-wrap part keeps "up to bound N" honest even when the loop
-    # bound expression could overflow in fixed width.
-    end = start + z3.BitVecVal(ctx.bound, ctx.w)
-    ctx.assumptions.append(z3.Implies(pc, z3.And(start <= end, start <= stop, stop <= end)))
+    # In-bound assumption (guarded by pc): the loop runs at most `bound` times AND every
+    # loop-variable value (rstart .. rstop-1) is representable. An empty range
+    # (rstop <= rstart) runs 0 times and is in scope regardless of endpoint magnitudes.
+    imin_w = z3.BitVecVal(-(1 << (w - 1)), wide)
+    imax_w = z3.BitVecVal((1 << (w - 1)) - 1, wide)
+    trip = rstop - rstart
+    nonempty = trip > z3.BitVecVal(0, wide)
+    representable = z3.And(imin_w <= rstart, rstop - z3.BitVecVal(1, wide) <= imax_w)
+    in_scope = z3.And(trip <= z3.BitVecVal(ctx.bound, wide), z3.Or(z3.Not(nonempty), representable))
+    ctx.assumptions.append(z3.Implies(pc, in_scope))
     return cur, returned, retval
 
 
@@ -377,15 +431,24 @@ def _eval(node: ir.Expr, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> z3.ExprRef:
         return _eval_compare(node, env, ctx, pc)
 
     if isinstance(node, ir.BoolOp):
-        # Short-circuit: later operands only execute under the accumulated guard,
-        # so a guarded access like `i < len(xs) and xs[i] > 0` is error-free.
-        terms = []
+        # Python `and`/`or` return an OPERAND value, not a bool: `A or B` is A if A is
+        # truthy else B; `A and B` is A if A is falsy else B. Short-circuit: later
+        # operands execute only under the accumulated guard, so a guarded access like
+        # `i < len(xs) and xs[i] > 0` stays error-free. (In a boolean context the
+        # result is coerced with _as_bool, which yields the correct truth value.)
+        pairs = []
         cur_pc = pc
         for value in node.values:
-            term = _as_bool(_eval(value, env, ctx, cur_pc))
-            terms.append(term)
-            cur_pc = z3.And(cur_pc, term if node.op == "and" else z3.Not(term))
-        return z3.And(terms) if node.op == "and" else z3.Or(terms)
+            val = _eval(value, env, ctx, cur_pc)
+            truth = _as_bool(val)
+            pairs.append((val, truth))
+            cur_pc = z3.And(cur_pc, truth if node.op == "and" else z3.Not(truth))
+        result = pairs[-1][0]
+        for val, truth in reversed(pairs[:-1]):
+            # or: this operand if truthy, else the rest; and: the rest if truthy, else this
+            result = _merge(truth, val, result, ctx.w) if node.op == "or" \
+                else _merge(truth, result, val, ctx.w)
+        return result
 
     if isinstance(node, ir.IfExp):
         cond = _as_bool(_eval(node.test, env, ctx, pc))
@@ -528,6 +591,8 @@ def _floormod(a: z3.ExprRef, b: z3.ExprRef) -> z3.ExprRef:
 # --- sort coercions / merging ----------------------------------------------
 
 def _as_bool(e) -> z3.ExprRef:
+    if e is _UNDEFINED:
+        raise UnsupportedForProof("value is not modeled (mixed-type or out-of-scope)")
     if isinstance(e, SymList):
         return e.length != z3.BitVecVal(0, e.length.size())  # a sequence is truthy iff non-empty
     if z3.is_bool(e):
@@ -535,7 +600,13 @@ def _as_bool(e) -> z3.ExprRef:
     return e != z3.BitVecVal(0, e.size())
 
 
-def _as_bv(e: z3.ExprRef, w: int) -> z3.ExprRef:
+def _as_bv(e, w: int) -> z3.ExprRef:
+    if e is _UNDEFINED:
+        raise UnsupportedForProof("value is not modeled (mixed-type or out-of-scope)")
+    if isinstance(e, SymList):
+        # A sequence used where a scalar int is required (`-xs`, `xs[xs]`, `xs + 1`)
+        # is a Python TypeError we do not model — decline rather than crash in z3.
+        raise UnsupportedForProof("a sequence cannot be used as a scalar")
     if z3.is_bv(e):
         return e
     return z3.If(e, z3.BitVecVal(1, w), z3.BitVecVal(0, w))
@@ -544,13 +615,19 @@ def _as_bv(e: z3.ExprRef, w: int) -> z3.ExprRef:
 def _merge(cond: z3.ExprRef, then_val, else_val, w: int):
     if then_val is _UNDEFINED or else_val is _UNDEFINED:
         return _UNDEFINED  # undefined on either path -> undefined (declines on read)
-    if isinstance(then_val, SymList) or isinstance(else_val, SymList):
-        caps = [v.cap for v in (then_val, else_val) if isinstance(v, SymList)]
+    then_seq, else_seq = isinstance(then_val, SymList), isinstance(else_val, SymList)
+    if then_seq or else_seq:
+        # A variable that is a sequence on one path and a scalar on the other, or a
+        # str on one path and a list on the other, has no single modeled value — a
+        # Python program can do that, but we cannot represent it, so make it
+        # undefined (a later read declines) rather than crash or mis-merge its kind.
+        if not (then_seq and else_seq) or then_val.kind != else_val.kind:
+            return _UNDEFINED
         return SymList(
             z3.If(cond, then_val.arr, else_val.arr),
             z3.If(cond, then_val.length, else_val.length),
-            cap=max(caps),
-            kind=then_val.kind if isinstance(then_val, SymList) else else_val.kind,
+            cap=max(then_val.cap, else_val.cap),
+            kind=then_val.kind,
         )
     if z3.is_bool(then_val) and z3.is_bool(else_val):
         return z3.If(cond, then_val, else_val)
@@ -666,6 +743,8 @@ def _empty_retval(ret_kind: str, width: int):
 
 
 def _coerce_return(raw, ctx: _Ctx):
+    if raw is _UNDEFINED:
+        raise UnsupportedForProof("return value is not modeled (mixed-type or out-of-scope)")
     if ctx.ret_kind in ("list", "str"):
         want = "char" if ctx.ret_kind == "str" else "int"
         if not isinstance(raw, SymList) or raw.kind != want:

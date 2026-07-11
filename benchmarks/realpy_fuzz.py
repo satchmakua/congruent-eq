@@ -145,12 +145,15 @@ def _rnd_int(rng, depth, names):
     if depth <= 0 or rng.random() < 0.45:
         return ir.Name(rng.choice(names)) if rng.random() < 0.6 else ir.Const(rng.choice(SMALL), "int")
     roll = rng.random()
-    if roll < 0.65:
+    if roll < 0.6:
         return ir.BinOp(rng.choice(["+", "-", "*", "//", "%"]),
                         _rnd_int(rng, depth - 1, names), _rnd_int(rng, depth - 1, names))
-    if roll < 0.8:
+    if roll < 0.72:
         return ir.UnaryOp("-", _rnd_int(rng, depth - 1, names))
-    return ir.IfExp(_rnd_bool(rng, depth - 1, names), _rnd_int(rng, depth - 1, names), _rnd_int(rng, depth - 1, names))
+    if roll < 0.86:
+        return ir.IfExp(_rnd_bool(rng, depth - 1, names), _rnd_int(rng, depth - 1, names), _rnd_int(rng, depth - 1, names))
+    # `and`/`or` in value position return an operand value (int), not a bool
+    return ir.BoolOp(rng.choice(["and", "or"]), (_rnd_int(rng, depth - 1, names), _rnd_int(rng, depth - 1, names)))
 
 
 def _rnd_bool(rng, depth, names):
@@ -267,8 +270,25 @@ def _seq_truth(name, rng):
     return _fn(name, [param], "int", body)
 
 
+def _falloff(name, rng):
+    # sometimes returns, sometimes falls off the end -> Python None (a value)
+    cond = ir.Compare(rng.choice([">", "<", "==", ">="]), ir.Name("x"), ir.Const(rng.choice(SMALL), "int"))
+    body = [ir.If(cond, (ir.Return(ir.Const(rng.choice(SMALL), "int")),), ())]
+    if rng.random() < 0.4:
+        body.append(ir.Return(ir.Const(rng.choice(SMALL), "int")))  # sometimes a final return
+    return _fn(name, [("x", "int")], "int", body)
+
+
+def _range_loop(name, rng):
+    # range(a, n) with small, possibly empty/negative bounds
+    a = ir.Const(rng.choice([0, 1, -1, 2]), "int")
+    inner = [ir.Assign("s", ir.BinOp("+", ir.Name("s"), ir.Const(1, "int")))]
+    body = [ir.Assign("s", ir.Const(0, "int")), ir.For("i", a, ir.Name("n"), tuple(inner)), ir.Return(ir.Name("s"))]
+    return _fn(name, [("n", "int")], "int", body)
+
+
 FAMILIES = [_index_list, _index_str, _index_loop, _expr, _loop, _reduce,
-            _reduce_computed, _str_concat, _str_count, _list_map, _seq_truth]
+            _reduce_computed, _str_concat, _str_count, _list_map, _seq_truth, _falloff, _range_loop]
 
 
 def _gen_arg(rng, type_name):

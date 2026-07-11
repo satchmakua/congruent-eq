@@ -67,6 +67,15 @@ def _truth(value: object) -> bool:
     return value != 0 if isinstance(value, int) and not isinstance(value, bool) else bool(value)
 
 
+def _as_int(value: object) -> int:
+    """Require an int where Python requires one (index, unary minus, range bound).
+    A str/list here is a Python TypeError — do NOT `int()`-coerce it (`int('5')`
+    would succeed and fabricate a divergence where real Python raises)."""
+    if isinstance(value, int):  # bool is an int, and is valid in these positions
+        return int(value)
+    raise TypeError(f"expected an integer, got {type(value).__name__}")
+
+
 def _bind_params(fn: Function, values: list[object], width: int) -> dict[str, object]:
     return {
         p.name: (_wrap(v, width) if p.type_name == "int" else v)
@@ -81,7 +90,8 @@ def _eval_function(fn: Function, args: list[object], width: int, bound: int) -> 
         _exec_block(fn.body, env, ctx)
     except _Return as r:
         return r.value
-    raise ValueError(f"{fn.name}: control reached end of function without returning")
+    return None  # fell off the end without returning -> Python yields None (a value,
+    #              distinct from a raised exception)
 
 
 def _preconditions_hold(
@@ -119,12 +129,14 @@ def _exec_stmt(stmt: ir.Stmt, env: dict[str, object], ctx: _Ctx) -> None:
     if isinstance(stmt, ir.Continue):
         raise _Continue
     if isinstance(stmt, ir.For):
-        start = int(_eval(stmt.start, env, ctx))  # type: ignore[arg-type]
-        stop = int(_eval(stmt.stop, env, ctx))  # type: ignore[arg-type]
-        # Mirror the symbolic in-bound condition: 0..bound iterations with no
-        # index-window wrap (so an overflowing range is skipped, not run empty).
-        _, imax = _int_min_max(ctx.width)
-        if not (start + ctx.bound <= imax and start <= stop <= start + ctx.bound):
+        start = _eval_int_nowrap(stmt.start, env, ctx)
+        stop = _eval_int_nowrap(stmt.stop, env, ctx)
+        # In scope iff the loop runs at most `bound` times AND every loop-variable
+        # value (start .. stop-1) is representable in the width. An empty range
+        # (stop <= start) runs 0 times and is in scope regardless of the endpoints.
+        imin, imax = _int_min_max(ctx.width)
+        trip = stop - start
+        if trip > ctx.bound or (trip > 0 and not (imin <= start and stop - 1 <= imax)):
             raise _OutOfBound
         _run_loop((_wrap(i, ctx.width) for i in range(start, stop)), stmt, env, ctx)
         # NB: like Python, the loop variable persists with its last value after
@@ -185,27 +197,36 @@ def _eval(node: ir.Expr, env: dict[str, object], ctx: _Ctx) -> object:
     if isinstance(node, ir.UnaryOp):
         operand = _eval(node.operand, env, ctx)
         if node.op == "-":
-            return _wrap(-int(operand), ctx.width)
+            return _wrap(-_as_int(operand), ctx.width)  # -str / -list is a TypeError
         return not _truth(operand)
 
     if isinstance(node, ir.Compare):
         return _apply_cmp(node.op, _eval(node.left, env, ctx), _eval(node.right, env, ctx))
 
     if isinstance(node, ir.BoolOp):
-        if node.op == "and":
-            return all(_truth(_eval(v, env, ctx)) for v in node.values)
-        return any(_truth(_eval(v, env, ctx)) for v in node.values)
+        # Python `and`/`or` return an operand value (with short-circuit), not a bool:
+        # `A or B` is the first truthy operand (or the last), `A and B` the first falsy.
+        result: object = None
+        for v in node.values:
+            result = _eval(v, env, ctx)
+            if node.op == "or" and _truth(result):
+                return result
+            if node.op == "and" and not _truth(result):
+                return result
+        return result
 
     if isinstance(node, ir.IfExp):
         chosen = node.body if _truth(_eval(node.test, env, ctx)) else node.orelse
         return _eval(chosen, env, ctx)
 
     if isinstance(node, ir.Len):
-        return len(_eval(node.value, env, ctx))  # type: ignore[arg-type]
+        # A length is a fixed-width int, like any other; wrap it so `len(xs + xs)`
+        # matches `len(xs) + len(xs)` under the same 2s-complement truncation.
+        return _wrap(len(_eval(node.value, env, ctx)), ctx.width)  # type: ignore[arg-type]
 
     if isinstance(node, ir.Subscript):
         seq = _eval(node.value, env, ctx)
-        index = int(_eval(node.index, env, ctx))  # type: ignore[arg-type]
+        index = _as_int(_eval(node.index, env, ctx))  # a str/list index is a TypeError
         n = len(seq)  # type: ignore[arg-type]
         if not -n <= index < n:  # genuinely out of range is a divergence
             raise IndexError(index)
@@ -227,6 +248,29 @@ def _eval(node: ir.Expr, env: dict[str, object], ctx: _Ctx) -> object:
         return node.value
 
     raise AssertionError(f"unhandled expression node: {node!r}")
+
+
+def _eval_int_nowrap(node: ir.Expr, env: dict[str, object], ctx: _Ctx) -> int:
+    """Evaluate an integer loop-bound expression WITHOUT fixed-width wrapping, so a
+    bound that overflows the width (e.g. `n + 1` at n == imax) is detected as out of
+    range rather than silently wrapping into a small or empty range."""
+    if isinstance(node, ir.Const):
+        return int(node.value)  # type: ignore[arg-type]
+    if isinstance(node, ir.UnaryOp) and node.op == "-":
+        return -_eval_int_nowrap(node.operand, env, ctx)
+    if isinstance(node, ir.BinOp) and node.op in ("+", "-", "*", "//", "%"):
+        a = _eval_int_nowrap(node.left, env, ctx)
+        b = _eval_int_nowrap(node.right, env, ctx)
+        if node.op == "+":
+            return a + b
+        if node.op == "-":
+            return a - b
+        if node.op == "*":
+            return a * b
+        if b == 0:
+            raise ZeroDivisionError  # a /0 in the bound raises, exactly like Python
+        return a // b if node.op == "//" else a % b  # Python floor division / modulo
+    return _as_int(_eval(node, env, ctx))  # Name/Len/other: must be an int (range('1') is a TypeError)
 
 
 def _apply_binop(op: str, a: int, b: int) -> int:

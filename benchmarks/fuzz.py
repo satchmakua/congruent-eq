@@ -45,13 +45,17 @@ def _rnd_int(rng, depth, names):
     if depth <= 0 or rng.random() < 0.4:
         return ir.Name(rng.choice(names)) if rng.random() < 0.6 else ir.Const(rng.choice(_LEAVES), "int")
     roll = rng.random()
-    if roll < 0.65:
+    if roll < 0.6:
         op = rng.choice(["+", "-", "*", "//", "%"])
         return ir.BinOp(op, _rnd_int(rng, depth - 1, names), _rnd_int(rng, depth - 1, names))
-    if roll < 0.8:
+    if roll < 0.72:
         return ir.UnaryOp("-", _rnd_int(rng, depth - 1, names))
-    return ir.IfExp(_rnd_bool(rng, depth - 1, names),
-                    _rnd_int(rng, depth - 1, names), _rnd_int(rng, depth - 1, names))
+    if roll < 0.86:
+        return ir.IfExp(_rnd_bool(rng, depth - 1, names),
+                        _rnd_int(rng, depth - 1, names), _rnd_int(rng, depth - 1, names))
+    # `and`/`or` in value position return an operand (int), not a bool
+    return ir.BoolOp(rng.choice(["and", "or"]),
+                     (_rnd_int(rng, depth - 1, names), _rnd_int(rng, depth - 1, names)))
 
 
 def _rnd_bool(rng, depth, names):

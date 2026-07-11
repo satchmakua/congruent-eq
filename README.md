@@ -134,9 +134,9 @@ EQUIVALENT  (stage: symbolic, 0.00s)
 > `==`, `+`, indexing incl. Python negative indices, iteration). Out-of-bounds
 > access and divide-by-zero are modeled as runtime errors (a rewrite that crashes
 > where the original didn't is a counterexample); *falling off the end without
-> returning* is likewise treated as an error rather than a `None` return (so two
-> functions that both fail to return on an input are equivalent). Counterexamples
-> are minimized to the smallest failing input. An optional `--cross-check` re-decides each query with CVC5. Benchmarks
+> returning* yields Python's `None` — a value distinct from both a raised
+> exception and any returned value. Counterexamples are minimized to the smallest
+> failing input. An optional `--cross-check` re-decides each query with CVC5. Benchmarks
 > pass with zero unsound verdicts. See [ROADMAP.md](ROADMAP.md).
 
 ---

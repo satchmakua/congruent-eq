@@ -120,21 +120,32 @@ def _equivalence_query(original, candidate, int_width, bound):
     constraints = list(well_formed)
     # Only the ORIGINAL's precondition constrains the domain: a precondition the
     # candidate adds is itself a behavioral change (domain narrowing) and must
-    # surface as a counterexample, not be assumed away.
+    # surface as a counterexample, not be assumed away. But a candidate precondition's
+    # ARGUMENT is still evaluated at runtime — if it raises (e.g. assume(xs[0] > 0) on
+    # []), that is a real divergence, so fold it into the candidate's error.
     constraints += symbolic.lower_preconditions(original, inputs, int_width, bound)
+    cand_pre_error = symbolic.precondition_error(candidate, inputs, int_width, bound)
+    if not z3.is_false(cand_pre_error):
+        summary_c.error = z3.Or(summary_c.error, cand_pre_error)
     constraints += summary_o.assumptions + summary_c.assumptions
 
     # No output-length cap constraint is needed: each SymList carries its own static
     # max length (`cap`), `length <= cap` holds by construction, and `_differ`
     # compares over that cap — so no in-scope input is ever dropped from the query.
 
-    # Functions differ if their runtime-error behavior differs, or if both
-    # complete normally but produce different outputs.
+    # Each function's observable outcome is one of: raises, returns None (fell off
+    # the end), or returns a value. They differ if those outcomes differ — the
+    # error behavior differs, exactly one falls off (None vs a value), or both
+    # return a value but the values differ.
     both_ok = z3.And(z3.Not(summary_o.error), z3.Not(summary_c.error))
     constraints.append(
         z3.Or(
             summary_o.error != summary_c.error,
-            z3.And(both_ok, _differ(summary_o.output, summary_c.output, int_width, bound)),
+            z3.And(both_ok, summary_o.fell_off != summary_c.fell_off),
+            z3.And(
+                both_ok, z3.Not(summary_o.fell_off), z3.Not(summary_c.fell_off),
+                _differ(summary_o.output, summary_c.output, int_width, bound),
+            ),
         )
     )
     return inputs, constraints, summary_o, summary_c
@@ -255,9 +266,11 @@ def _decode_seq(model: z3.ModelRef, sym: symbolic.SymList, int_width: int, bound
 
 
 def _decode_output(model: z3.ModelRef, summary: symbolic.Summary, int_width: int, bound: int) -> object:
-    """A function's observable result in the model: a value, a sequence, or a raised error."""
+    """A function's observable result in the model: a value, a sequence, None, or a raised error."""
     if z3.is_true(model.eval(summary.error, model_completion=True)):
         return "<raises>"
+    if z3.is_true(model.eval(summary.fell_off, model_completion=True)):
+        return None  # fell off the end without returning
     out = summary.output
     if isinstance(out, symbolic.SymList):
         return _decode_seq(model, out, int_width, bound)
