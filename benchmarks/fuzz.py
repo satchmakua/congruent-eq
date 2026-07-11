@@ -158,7 +158,18 @@ def _index(name, rng):
     return _fn(name, [param, ("i", "int")], ret, (ir.Return(ir.Subscript(seq, _rnd_index(rng, seq))),))
 
 
-FAMILIES = [_expr, _loop, _list_reduce, _list_map, _str_count, _str_concat, _index]
+def _seq_truth(name, rng):
+    """Branch on sequence truthiness (`if xs:` / `not xs`) — a non-empty seq is truthy."""
+    seq, param = (ir.Name("xs"), ("xs", "list[int]")) if rng.random() < 0.6 else (ir.Name("s"), ("s", "str"))
+    cond = ir.UnaryOp("not", seq) if rng.random() < 0.4 else seq
+    if rng.random() < 0.5:  # nest with a length comparison, the natural equivalent
+        cond = ir.BoolOp(rng.choice(["and", "or"]),
+                         (cond, ir.Compare(rng.choice(["==", ">"]), ir.Len(seq), ir.Const(rng.choice([0, 1]), "int"))))
+    body = (ir.If(cond, (ir.Return(ir.Const(1, "int")),), (ir.Return(ir.Const(0, "int")),)),)
+    return _fn(name, [param], "int", body)
+
+
+FAMILIES = [_expr, _loop, _list_reduce, _list_map, _str_count, _str_concat, _index, _seq_truth]
 
 
 # --- concrete validation ---------------------------------------------------

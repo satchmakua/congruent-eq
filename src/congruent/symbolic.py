@@ -244,8 +244,14 @@ def _run_iterations(loop, cur, ctx, pc, returned, retval, idx_of, guard_of, iter
     # The loop variable's value after the loop is not soundly modeled (its final
     # value depends on trip count, and differs between Python and C), so mark it
     # undefined: any later read — in this or an enclosing scope — declines to
-    # UNKNOWN rather than reverting to a stale (e.g. pre-loop parameter) value.
+    # UNKNOWN rather than reverting to a stale (e.g. pre-loop parameter) value. Any
+    # NESTED loop's variable is likewise out of scope now; it is excluded from the
+    # merged `written` set, so undefine it here too or a later read would revert to
+    # a stale value (e.g. a shadowed parameter).
     cur[loop.var] = _UNDEFINED
+    for nested in _loop_vars(loop.body):
+        if nested in cur:
+            cur[nested] = _UNDEFINED
     return cur, returned, retval
 
 
@@ -326,6 +332,18 @@ def _touched_names(stmts) -> set[str]:
             names |= {stmt.var} | _touched_names(stmt.body)
         elif isinstance(stmt, ir.If):
             names |= _touched_names(stmt.body) | _touched_names(stmt.orelse)
+    return names
+
+
+def _loop_vars(stmts) -> set[str]:
+    """Every loop variable bound anywhere in a block (recursively). All of these are
+    out of scope once an enclosing loop finishes, so a later read must decline."""
+    names: set[str] = set()
+    for stmt in stmts:
+        if isinstance(stmt, (ir.For, ir.ForEach)):
+            names |= {stmt.var} | _loop_vars(stmt.body)
+        elif isinstance(stmt, ir.If):
+            names |= _loop_vars(stmt.body) | _loop_vars(stmt.orelse)
     return names
 
 
@@ -411,15 +429,27 @@ def _eval_binop(node: ir.BinOp, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> z3.Expr
     if isinstance(left, SymList):
         if node.op != "+":
             raise UnsupportedForProof("unsupported sequence operation")
-        # Fast path: appending a literal is a couple of Stores at the tail, far
-        # cheaper than the general capacity reconstruction.
+        # The right operand's sequence kind: a list literal is a list, a str literal
+        # is a str, a SymList carries its own kind, anything else is a scalar.
+        if isinstance(node.right, ir.ListLit):
+            right_kind: str | None = "int"
+        elif isinstance(node.right, ir.StrLit):
+            right_kind = "char"
+        else:
+            right = _eval(node.right, env, ctx, pc)
+            right_kind = right.kind if isinstance(right, SymList) else None
+        if right_kind != left.kind:
+            # A str and a list are different Python types; concatenating across them
+            # (or a sequence with a scalar) — "" + [1], xs + "a", xs + 5 — raises
+            # TypeError, so model it as an (unconditional) runtime error, not a wrong
+            # element-wise concatenation that would fabricate a divergence.
+            ctx.error_terms.append(pc)
+            return left  # placeholder, dominated by the error condition
+        # Same kind: append a literal (cheap) or concat two sequences.
         if isinstance(node.right, ir.ListLit):
             return _append(left, [_eval(e, env, ctx, pc) for e in node.right.elements], ctx, pc)
         if isinstance(node.right, ir.StrLit):
             return _append(left, [z3.BitVecVal(ord(c), ctx.w) for c in node.right.value], ctx, pc)
-        right = _eval(node.right, env, ctx, pc)
-        if not isinstance(right, SymList):
-            raise UnsupportedForProof("unsupported sequence operation")
         return _concat(left, right, ctx, pc)
 
     right = _eval(node.right, env, ctx, pc)
@@ -497,7 +527,9 @@ def _floormod(a: z3.ExprRef, b: z3.ExprRef) -> z3.ExprRef:
 
 # --- sort coercions / merging ----------------------------------------------
 
-def _as_bool(e: z3.ExprRef) -> z3.ExprRef:
+def _as_bool(e) -> z3.ExprRef:
+    if isinstance(e, SymList):
+        return e.length != z3.BitVecVal(0, e.length.size())  # a sequence is truthy iff non-empty
     if z3.is_bool(e):
         return e
     return e != z3.BitVecVal(0, e.size())
@@ -535,6 +567,8 @@ def _empty_seq(width: int, kind: str) -> SymList:
 def _build_seq(elements, width: int, kind: str) -> SymList:
     arr = z3.K(z3.BitVecSort(width), z3.BitVecVal(0, width))
     for i, element in enumerate(elements):
+        if isinstance(element, SymList):
+            raise UnsupportedForProof("nested sequences (list of lists/strs) are not modeled")
         arr = z3.Store(arr, z3.BitVecVal(i, width), _as_bv(element, width))
     return SymList(arr, z3.BitVecVal(len(elements), width), cap=len(elements), kind=kind)
 
@@ -587,6 +621,8 @@ def _append(a: SymList, elements, ctx: _Ctx, pc) -> SymList:
     cap = _checked_cap(a.cap + len(elements), ctx)
     arr, length = a.arr, a.length
     for element in elements:
+        if isinstance(element, SymList):
+            raise UnsupportedForProof("nested sequences (list of lists/strs) are not modeled")
         arr = z3.Store(arr, length, _as_bv(element, ctx.w))
         length = length + z3.BitVecVal(1, ctx.w)
     return SymList(arr, length, cap=cap, kind=a.kind)
@@ -630,11 +666,17 @@ def _empty_retval(ret_kind: str, width: int):
 
 
 def _coerce_return(raw, ctx: _Ctx):
-    if ctx.ret_kind == "bool":
-        return _as_bool(raw)
     if ctx.ret_kind in ("list", "str"):
         want = "char" if ctx.ret_kind == "str" else "int"
         if not isinstance(raw, SymList) or raw.kind != want:
             raise UnsupportedForProof(f"function annotated -> {ctx.ret_kind} did not return one")
         return raw
-    return _as_bv(raw, ctx.w)
+    # int / bool: a scalar. A sequence returned here (e.g. `-> int: return xs`) is a
+    # type mismatch we cannot model soundly — decline rather than crash or coerce.
+    if isinstance(raw, SymList):
+        raise UnsupportedForProof(f"function annotated -> {ctx.ret_kind} returned a sequence")
+    # Keep the value's *natural* sort. Python does NOT enforce the return annotation,
+    # so `-> bool: return x + y` really returns the int x+y — collapsing it to a
+    # truthiness bool would make 88 and 89 both True and prove a false EQUIVALENT.
+    # Output comparison coerces bool<->bitvec losslessly as needed.
+    return raw

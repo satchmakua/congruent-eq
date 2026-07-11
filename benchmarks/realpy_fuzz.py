@@ -257,8 +257,18 @@ def _list_map(name, rng):
     return _fn(name, [("xs", "list[int]")], "list[int]", body)
 
 
+def _seq_truth(name, rng):
+    seq, param = (ir.Name("xs"), ("xs", "list[int]")) if rng.random() < 0.6 else (ir.Name("s"), ("s", "str"))
+    cond = ir.UnaryOp("not", seq) if rng.random() < 0.4 else seq
+    if rng.random() < 0.5:
+        cond = ir.BoolOp(rng.choice(["and", "or"]),
+                         (cond, ir.Compare(rng.choice(["==", ">"]), ir.Len(seq), ir.Const(rng.choice([0, 1]), "int"))))
+    body = [ir.If(cond, (ir.Return(ir.Const(1, "int")),), (ir.Return(ir.Const(0, "int")),))]
+    return _fn(name, [param], "int", body)
+
+
 FAMILIES = [_index_list, _index_str, _index_loop, _expr, _loop, _reduce,
-            _reduce_computed, _str_concat, _str_count, _list_map]
+            _reduce_computed, _str_concat, _str_count, _list_map, _seq_truth]
 
 
 def _gen_arg(rng, type_name):

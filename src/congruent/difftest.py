@@ -174,6 +174,11 @@ def _eval(node: ir.Expr, env: dict[str, object], ctx: _Ctx) -> object:
         if isinstance(left, (list, str)) or isinstance(right, (list, str)):
             if node.op == "+" and type(left) is type(right):
                 return left + right  # list or string concatenation
+            if node.op == "*" and (isinstance(left, (list, str)) != isinstance(right, (list, str))):
+                # `seq * int` is valid Python (repetition) but the symbolic stage does
+                # not model it; treat the input as out of model (skip) rather than
+                # fabricate a runtime error, which would be a false counterexample.
+                raise _OutOfBound("sequence repetition is not modeled")
             raise TypeError("unsupported operand types for sequence operation")
         return _wrap(_apply_binop(node.op, int(left), int(right)), ctx.width)
 
@@ -211,7 +216,12 @@ def _eval(node: ir.Expr, env: dict[str, object], ctx: _Ctx) -> object:
         return _wrap(int(seq[index]), ctx.width)  # type: ignore[index]
 
     if isinstance(node, ir.ListLit):
-        return [_wrap(int(_eval(e, env, ctx)), ctx.width) for e in node.elements]
+        elements = [_eval(e, env, ctx) for e in node.elements]
+        if any(isinstance(el, (list, str)) for el in elements):
+            # A list of lists/strs is outside the list[int] model — treat as out of
+            # model (skip) rather than fabricate an error (a false counterexample).
+            raise _OutOfBound("nested sequences are not modeled")
+        return [_wrap(int(el), ctx.width) for el in elements]
 
     if isinstance(node, ir.StrLit):
         return node.value

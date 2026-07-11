@@ -191,3 +191,107 @@ def test_negative_index_matches_end_relative_index() -> None:
     a = "def f(xs: list[int]) -> int:\n    return xs[-1]"
     b = "def g(xs: list[int]) -> int:\n    return xs[len(xs) - 1]"
     assert _v(a, b, bound=3, int_width=8).status is Status.EQUIVALENT
+
+
+# --- fourth round (multi-agent adversarial audit) --------------------------
+
+def test_str_plus_list_is_a_type_error_not_a_concatenation() -> None:
+    # `s + [1]` mixes str and list -> TypeError in Python; the symbolic stage used
+    # to model it as element concat (append 1 vs 2), fabricating a counterexample.
+    a = 'def f(s: str) -> str:\n    return s + [1]'
+    b = 'def g(s: str) -> str:\n    return s + [2]'
+    assert _v(a, b, bound=2, int_width=32).status is Status.EQUIVALENT  # both always raise
+
+
+def test_list_plus_str_is_a_type_error_not_a_concatenation() -> None:
+    a = 'def f(xs: list[int]) -> list[int]:\n    return xs + "a"'
+    b = 'def g(xs: list[int]) -> list[int]:\n    return xs + "b"'
+    assert _v(a, b, bound=2, int_width=32).status is Status.EQUIVALENT  # both always raise
+
+
+def test_genuine_str_concat_still_detects_divergence() -> None:
+    # Guard the fix above didn't over-broaden: real str concat must still work.
+    a = "def f(s: str, t: str) -> str:\n    return s + t"
+    b = "def g(s: str, t: str) -> str:\n    return t + s"
+    assert _v(a, b, bound=2, int_width=32).status is Status.COUNTEREXAMPLE
+
+
+def test_bool_return_annotation_does_not_collapse_an_int_return() -> None:
+    # Python does not enforce `-> bool`; `return x + y` returns the int. Collapsing
+    # it to a truthiness bool made 88 and 89 both True -> a false EQUIVALENT.
+    a = "def f(x: int, y: int) -> bool:\n    return x + y"
+    b = "def g(x: int, y: int) -> bool:\n    return x + y + (1 if x == 37 and y == 51 else 0)"
+    verdict = _v(a, b, bound=2, int_width=8)
+    assert verdict.status is Status.COUNTEREXAMPLE
+    assert verdict.counterexample.inputs == {"x": 37, "y": 51}
+
+
+def test_genuine_bool_functions_still_prove_equivalent() -> None:
+    a = "def f(x: int) -> bool:\n    return x > 0"
+    b = "def g(x: int) -> bool:\n    return x >= 1"
+    assert _v(a, b, bound=2, int_width=8).status is Status.EQUIVALENT
+
+
+def test_nested_loop_variable_shadowing_param_does_not_revert() -> None:
+    # An inner loop var shadowing a param is excluded from the outer loop's merged
+    # names, so after the loops `return p` reverted to the stale param -> false
+    # counterexample. It must not: the sound outcome is UNKNOWN (declines).
+    a = "def f(p: int) -> int:\n    for i in range(2):\n        for p in range(2):\n            pass\n    return p"
+    b = "def g(p: int) -> int:\n    return 1"
+    assert _v(a, b, bound=2, int_width=8).status is not Status.COUNTEREXAMPLE
+
+
+def test_foreach_over_computed_sequence_reports_real_divergence() -> None:
+    # Iterating `xs + xs` (length 2*len) is faithful to Python: xs=[0,0] iterates 4
+    # elements and f/g genuinely diverge there. This must stay a COUNTEREXAMPLE — a
+    # guard against re-adding a `seq.length <= bound` exclusion that would hide it.
+    a = ("def f(xs: list[int]) -> int:\n    total = 0\n    pos = 0\n    for x in xs + xs:\n"
+         "        if pos >= 2:\n            total = total + x\n        pos = pos + 1\n    return total")
+    b = ("def g(xs: list[int]) -> int:\n    total = 0\n    pos = 0\n    for x in xs + xs:\n"
+         "        if pos >= 2:\n            total = total + x + 1\n        pos = pos + 1\n    return total")
+    assert _v(a, b, bound=2, int_width=8).status is Status.COUNTEREXAMPLE
+
+
+def test_int_annotated_function_returning_a_sequence_does_not_crash() -> None:
+    # `-> int: return xs` is a type mismatch; the symbolic stage must decline
+    # gracefully (not crash merging a SymList with a scalar default).
+    a = "def f(xs: list[int]) -> int:\n    return xs"
+    b = "def g(xs: list[int]) -> int:\n    return xs"
+    assert _v(a, b, bound=2, int_width=8).status in (Status.UNKNOWN, Status.EQUIVALENT)
+
+
+def test_sequence_truthiness_is_nonempty() -> None:
+    # `if xs:` / `not xs` used to crash (_as_bool couldn't handle a SymList). A
+    # sequence is truthy iff non-empty, exactly like `len(xs) > 0`.
+    assert _v("def f(xs: list[int]) -> int:\n    if xs:\n        return 1\n    return 0",
+              "def g(xs: list[int]) -> int:\n    if len(xs) > 0:\n        return 1\n    return 0",
+              bound=2, int_width=8).status is Status.EQUIVALENT
+    assert _v("def f(s: str) -> bool:\n    return not s",
+              "def g(s: str) -> bool:\n    return len(s) == 0",
+              bound=2, int_width=32).status is Status.EQUIVALENT
+    # and a genuine divergence is still caught (empty & length-1 both truthy? no)
+    assert _v("def f(xs: list[int]) -> int:\n    if xs:\n        return 1\n    return 0",
+              "def g(xs: list[int]) -> int:\n    if len(xs) > 1:\n        return 1\n    return 0",
+              bound=2, int_width=8).status is Status.COUNTEREXAMPLE
+
+
+def test_sequence_repetition_is_not_a_false_counterexample() -> None:
+    # `s * 2 == s + s` for every string; the interpreter used to raise on `s * 2`,
+    # fabricating a divergence. `*` on sequences is unmodeled -> the pair is UNKNOWN.
+    assert _v("def f(s: str) -> str:\n    return s * 2",
+              "def g(s: str) -> str:\n    return s + s",
+              bound=2, int_width=32).status is not Status.COUNTEREXAMPLE
+    assert _v("def f(xs: list[int]) -> list[int]:\n    return xs * 2",
+              "def g(xs: list[int]) -> list[int]:\n    return xs + xs",
+              bound=2, int_width=8).status is not Status.COUNTEREXAMPLE
+
+
+def test_nested_list_literal_declines_without_crash_or_false_verdict() -> None:
+    # `[xs]` is a list of lists, outside the list[int] model. It must not crash the
+    # symbolic stage nor be fabricated as an error (a false counterexample).
+    assert _v("def f(xs: list[int]) -> list[int]:\n    return xs + [xs]",
+              "def g(xs: list[int]) -> list[int]:\n    return xs + [xs]",
+              bound=2, int_width=8).status is not Status.COUNTEREXAMPLE
+    assert _v("def f(xs: list[int]) -> int:\n    ys = [xs]\n    return len(ys)",
+              "def g(xs: list[int]) -> int:\n    return 1",
+              bound=2, int_width=8).status is not Status.COUNTEREXAMPLE
