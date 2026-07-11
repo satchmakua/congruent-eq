@@ -135,7 +135,30 @@ def _str_concat(name, rng):
     return _fn(name, [("s", "str"), ("t", "str")], "str", (ir.Return(expr),))
 
 
-FAMILIES = [_expr, _loop, _list_reduce, _list_map, _str_count, _str_concat]
+def _rnd_index(rng, seq):
+    """A small, often-negative index expression (exercises Python negative indexing)."""
+    r = rng.random()
+    if r < 0.3:
+        return ir.Name("i")
+    if r < 0.55:
+        return ir.Const(rng.choice([-1, -2, 0, 1, 2, -3]), "int")
+    if r < 0.72:
+        return ir.UnaryOp("-", ir.Name("i"))
+    if r < 0.86:
+        return ir.BinOp("-", ir.Len(seq), ir.Const(rng.choice([1, 2]), "int"))  # end-relative
+    return ir.BinOp(rng.choice(["+", "-"]), ir.Name("i"), ir.Const(rng.choice([1, -1]), "int"))
+
+
+def _index(name, rng):
+    """Index a list (int result) or a str (str result), including negative indices."""
+    if rng.random() < 0.6:
+        seq, ret, param = ir.Name("xs"), "int", ("xs", "list[int]")
+    else:
+        seq, ret, param = ir.Name("s"), "str", ("s", "str")
+    return _fn(name, [param, ("i", "int")], ret, (ir.Return(ir.Subscript(seq, _rnd_index(rng, seq))),))
+
+
+FAMILIES = [_expr, _loop, _list_reduce, _list_map, _str_count, _str_concat, _index]
 
 
 # --- concrete validation ---------------------------------------------------

@@ -386,11 +386,14 @@ def _eval(node: ir.Expr, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> z3.ExprRef:
         if not isinstance(seq, SymList):
             raise UnsupportedForProof("indexing a non-sequence value")
         index = _as_bv(_eval(node.index, env, ctx, pc), ctx.w)
-        zero = z3.BitVecVal(0, ctx.w)
-        in_bounds = z3.And(zero <= index, index < seq.length)  # signed; no negative indexing
+        n = seq.length
+        # Python indexing: valid iff -n <= index < n (signed); a negative index
+        # counts from the end, so the effective offset is index + n.
+        in_bounds = z3.And(-n <= index, index < n)
         ctx.error_terms.append(z3.And(pc, z3.Not(in_bounds)))
+        eff = z3.If(index < z3.BitVecVal(0, ctx.w), index + n, index)
         # str[i] is a 1-char string; list[i] is the int element.
-        return _char_at(seq, index, ctx.w) if seq.kind == "char" else z3.Select(seq.arr, index)
+        return _char_at(seq, eff, ctx.w) if seq.kind == "char" else z3.Select(seq.arr, eff)
 
     if isinstance(node, ir.ListLit):
         return _build_seq([_eval(e, env, ctx, pc) for e in node.elements], ctx.w, "int")

@@ -201,8 +201,11 @@ def _eval(node: ir.Expr, env: dict[str, object], ctx: _Ctx) -> object:
     if isinstance(node, ir.Subscript):
         seq = _eval(node.value, env, ctx)
         index = int(_eval(node.index, env, ctx))  # type: ignore[arg-type]
-        if not 0 <= index < len(seq):  # type: ignore[arg-type]
-            raise IndexError(index)  # out-of-range (incl. negative) is a divergence
+        n = len(seq)  # type: ignore[arg-type]
+        if not -n <= index < n:  # genuinely out of range is a divergence
+            raise IndexError(index)
+        if index < 0:
+            index += n  # Python negative indexing: xs[-1] is the last element
         if isinstance(seq, str):
             return seq[index]  # a 1-char string
         return _wrap(int(seq[index]), ctx.width)  # type: ignore[index]

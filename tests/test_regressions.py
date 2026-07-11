@@ -176,3 +176,18 @@ def test_str_never_equals_list_of_matching_code_points() -> None:
     a = "def f(s: str, xs: list[int]) -> bool:\n    return s == xs"
     b = "def g(s: str, xs: list[int]) -> bool:\n    return False"
     assert _v(a, b, bound=2, int_width=32).status is Status.EQUIVALENT
+
+
+def test_negative_index_is_python_not_an_error() -> None:
+    # Both stages modeled `xs[-1]` as out-of-range, matching an unrelated error ->
+    # a false EQUIVALENT vs real Python (where xs[-1] is the last element).
+    a = "def f(xs: list[int]) -> int:\n    return xs[-1]"
+    b = "def g(xs: list[int]) -> int:\n    return xs[0] // 0"
+    assert _v(a, b, bound=3, int_width=8).status is Status.COUNTEREXAMPLE
+
+
+def test_negative_index_matches_end_relative_index() -> None:
+    # xs[-1] must be provably equivalent to xs[len(xs)-1].
+    a = "def f(xs: list[int]) -> int:\n    return xs[-1]"
+    b = "def g(xs: list[int]) -> int:\n    return xs[len(xs) - 1]"
+    assert _v(a, b, bound=3, int_width=8).status is Status.EQUIVALENT
