@@ -123,7 +123,7 @@ EQUIVALENT  (stage: symbolic, 0.00s)
   note: holds within bound: lists/strings up to length 8, loops up to 8 iterations
 ```
 
-> **Status: M0–M7 complete.** The differential stage catches counterexamples
+> **Status: M0–M7 complete, plus the LLM closed-loop stretch.** The differential stage catches counterexamples
 > (overflow included) under a fixed-width integer model; the symbolic stage lowers
 > both functions to Z3 bitvector expressions and returns `EQUIVALENT` (UNSAT), a
 > `COUNTEREXAMPLE` (SAT, decoded to concrete inputs), or `UNKNOWN`. Supported:
@@ -193,6 +193,25 @@ midpoint, clamping, list maximum, sum-to-n, counting). Run them all:
 ```bash
 python examples/run_gallery.py
 ```
+
+## Closed loop: AI proposes, Congruent verifies
+
+The stretch feature ([`refine.py`](src/congruent/refine.py)) closes the loop: an
+LLM proposes a rewrite, Congruent checks it, and any counterexample is fed back
+so the model can fix its own mistake — repeating until the rewrite is *proven*
+equivalent within the bound. **The loop never accepts an unverified rewrite.**
+
+```bash
+python examples/closed_loop_demo.py          # offline, deterministic (a scripted LLM)
+python examples/closed_loop_demo.py --live   # a real model via the Anthropic API
+```
+
+The demo shows Congruent catching a plausible-but-wrong refactor and guiding the
+fix — e.g. an agent "simplifies" a midpoint to `(a + b) // 2`, Congruent returns
+the exact overflowing input, and the next attempt reverts to the safe form and is
+proven equivalent. The rewriter is pluggable via a `Rewriter` protocol:
+`ScriptedRewriter` (offline, used by the demo and tests) or `AnthropicRewriter`
+(`pip install "congruent[llm]"`, reads `ANTHROPIC_API_KEY`).
 
 ## Benchmarks
 

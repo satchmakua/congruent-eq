@@ -3,6 +3,8 @@
 Public surface:
     check            — run the equivalence pipeline, return a Verdict.
     Verdict, Status, Counterexample — the result data model.
+    refine           — the LLM closed loop (AI proposes, Congruent verifies).
+    Rewriter, ScriptedRewriter, AnthropicRewriter, RefineResult — closed-loop pieces.
 
 See README.md for scope and ROADMAP.md for milestones.
 """
@@ -10,6 +12,13 @@ See README.md for scope and ROADMAP.md for milestones.
 from __future__ import annotations
 
 from congruent.equiv import Counterexample, Status, Verdict, check
+from congruent.refine import (
+    AnthropicRewriter,
+    RefineResult,
+    Rewriter,
+    ScriptedRewriter,
+    refine,
+)
 
 __version__ = "0.0.1"
 
@@ -24,4 +33,8 @@ def assume(condition: bool) -> None:
     return None
 
 
-__all__ = ["check", "Verdict", "Status", "Counterexample", "assume", "__version__"]
+__all__ = [
+    "check", "Verdict", "Status", "Counterexample", "assume",
+    "refine", "Rewriter", "ScriptedRewriter", "AnthropicRewriter", "RefineResult",
+    "__version__",
+]

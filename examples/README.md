@@ -10,6 +10,15 @@ Run the whole gallery:
 python examples/run_gallery.py
 ```
 
+**Closed loop** — `closed_loop_demo.py` puts Congruent in an LLM refactoring
+loop: the model proposes a rewrite, Congruent verifies it, and each counterexample
+is fed back until the rewrite is *proven* equivalent. Runs offline by default:
+
+```bash
+python examples/closed_loop_demo.py          # scripted LLM, deterministic
+python examples/closed_loop_demo.py --live   # real Anthropic API (needs the [llm] extra + a key)
+```
+
 Or check one pair with the CLI:
 
 ```bash

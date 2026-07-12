@@ -22,6 +22,9 @@ from congruent.report import format_verdict  # noqa: E402
 
 EXAMPLES = Path(__file__).resolve().parent
 
+# Runnable scripts in examples/ that are NOT gallery `original`/`candidate` pairs.
+_NON_GALLERY = {"run_gallery.py", "closed_loop_demo.py"}
+
 
 @dataclass
 class Outcome:
@@ -41,10 +44,10 @@ def _load(path: Path):
 def evaluate(bound: int = 8) -> list[Outcome]:
     outcomes: list[Outcome] = []
     for path in sorted(EXAMPLES.glob("*.py")):
-        if path.name == "run_gallery.py":
+        if path.name in _NON_GALLERY:
             continue
-        module = _load(path)
         source = path.read_text(encoding="utf-8")
+        module = _load(path)
         verdict = check(
             parse_function(source, "original"),
             parse_function(source, "candidate"),
@@ -56,10 +59,10 @@ def evaluate(bound: int = 8) -> list[Outcome]:
 
 def main() -> int:
     for path in sorted(EXAMPLES.glob("*.py")):
-        if path.name == "run_gallery.py":
+        if path.name in _NON_GALLERY:
             continue
-        module = _load(path)
         source = path.read_text(encoding="utf-8")
+        module = _load(path)
         verdict = check(
             parse_function(source, "original"),
             parse_function(source, "candidate"),

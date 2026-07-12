@@ -48,6 +48,10 @@ cross-check = [
 c = [
   "pycparser>=2.21",
 ]
+# Optional LLM closed loop (AI proposes a rewrite, Congruent verifies) — see refine.py.
+llm = [
+  "anthropic>=0.40",
+]
 
 [project.scripts]
 congruent = "congruent.cli:main"

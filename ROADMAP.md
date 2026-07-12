@@ -81,16 +81,19 @@ floor `//`/`%`; sound `UNKNOWN` fallback for anything not yet modeled.
       pairs against the same engine. C's fixed-width `int` fits the bitvector
       model directly; C truncating `/`/`%` lower to dedicated IR ops. The CLI
       dispatches on the `.c` extension.
-- [ ] *(Stretch)* auto-check LLM-suggested refactors (closed loop: AI proposes,
-      Congruent verifies). Needs the Anthropic API, so it can't run offline.
+- [x] *(Stretch)* **auto-check LLM-suggested refactors** (`refine.py`, closed
+      loop: AI proposes, Congruent verifies, counterexamples feed back until the
+      rewrite is *proven* equivalent). The LLM is pluggable — `AnthropicRewriter`
+      drives the real API (`pip install "congruent[llm]"`), while `ScriptedRewriter`
+      makes the loop testable and demoable offline. See `examples/closed_loop_demo.py`.
 
 ---
 
 ## Where to go next
 
 The honest bounded equivalence checker now covers a substantial Python subset
-(plus a C front end) end to end. The only remaining item is the LLM closed-loop
-demo, which needs network/API access — the v1 product is here.
+(plus a C front end) end to end, **including the LLM closed-loop stretch**. The
+v1 product is complete.
 
 ---
 
