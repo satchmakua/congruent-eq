@@ -287,8 +287,22 @@ def _range_loop(name, rng):
     return _fn(name, [("n", "int")], "int", body)
 
 
-FAMILIES = [_index_list, _index_str, _index_loop, _expr, _loop, _reduce,
-            _reduce_computed, _str_concat, _str_count, _list_map, _seq_truth, _falloff, _range_loop]
+def _type_error(name, rng):
+    # expressions that raise TypeError in real Python (str/list where an int is needed);
+    # the interpreter must raise too, not int()-coerce or mis-model them
+    exprs = [
+        ir.Subscript(ir.Name("xs"), ir.Name("s")),        # list indexed by a str
+        ir.UnaryOp("-", ir.Name("s")),                    # -str
+        ir.BinOp("+", ir.Name("s"), ir.Const(1, "int")),  # str + int
+        ir.BinOp("+", ir.Name("xs"), ir.Const(1, "int")),  # list + int
+        ir.BinOp("+", ir.Name("s"), ir.Name("xs")),       # str + list
+        ir.BinOp("*", ir.Name("s"), ir.Name("s")),        # str * str
+    ]
+    return _fn(name, [("xs", "list[int]"), ("s", "str")], "int", [ir.Return(rng.choice(exprs))])
+
+
+FAMILIES = [_index_list, _index_str, _index_loop, _expr, _loop, _reduce, _reduce_computed,
+            _str_concat, _str_count, _list_map, _seq_truth, _falloff, _range_loop, _type_error]
 
 
 def _gen_arg(rng, type_name):
