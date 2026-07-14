@@ -77,6 +77,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--int-width", type=int, default=32)
     parser.add_argument("--max-rounds", type=int, default=4)
     parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--timeout", type=float, default=60.0,
+                        help="per-request API timeout in seconds (default 60)")
+    parser.add_argument("--max-retries", type=int, default=1,
+                        help="API retries per request (default 1; a timeout multiplies across these)")
     args = parser.parse_args(argv)
 
     file_part, sep, name = args.target.partition(":")
@@ -93,7 +97,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"    {line}")
     print()
 
-    rewriter = _TimedRewriter(AnthropicRewriter(model=args.model))
+    rewriter = _TimedRewriter(
+        AnthropicRewriter(model=args.model, timeout=args.timeout, max_retries=args.max_retries)
+    )
     started = time.perf_counter()
     result = refine(
         original_source, name, rewriter,

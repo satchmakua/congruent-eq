@@ -226,6 +226,8 @@ protocol: `ScriptedRewriter` (offline, used by the demo and tests) or
 python benchmarks/bench_recall.py     # verdict vs. expectation over the eval set
 python benchmarks/bench_scaling.py    # solver time vs. --bound
 python benchmarks/fuzz.py             # random pairs, each verdict re-checked
+python benchmarks/realpy_fuzz.py      # interpreter vs. real Python (semantics oracle)
+python benchmarks/numpy_oracle.py     # wrapping vs. numpy fixed-width ints (overflow oracle)
 ```
 
 `bench_recall.py` exits non-zero if any verdict is unsound (a false `EQUIVALENT`
@@ -234,6 +236,17 @@ deepest check: it generates random function pairs, asks Congruent, and then
 *independently re-validates* each verdict against the concrete interpreter — so a
 false verdict fails loudly. ~4,900 random pairs (plus Z3↔CVC5 cross-checks) pass
 with zero unsound verdicts; a small deterministic batch runs in the test suite.
+
+Two more oracles validate the interpreter every other check trusts, each against
+a reference that shares no code with Congruent — one per half of the fixed-width
+model. `realpy_fuzz.py` unparses generated IR back to real Python and diffs the
+behavior (this caught the negative-indexing bug both stages shared); it runs wide
+so nothing overflows, isolating *semantics*. `numpy_oracle.py` covers the other
+half — the two's-complement **wrapping** itself — by re-evaluating random integer
+functions with numpy's C fixed-width scalars at small widths where overflow is
+the common case; it agrees with the interpreter across all widths (and matches
+Congruent's arithmetic *exhaustively* over every 8-bit operand pair, overflow
+edges included). Both run a deterministic slice in the test suite.
 
 The measured operating envelope — solver time out to bound 1024, where the
 cliff is, and why the default bound is 8 — is documented in

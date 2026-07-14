@@ -164,7 +164,14 @@ class AnthropicRewriter:
     an `ant auth login` profile). The counterexample feedback is threaded into the
     prompt so the model can correct its own mistake."""
 
-    def __init__(self, model: str = DEFAULT_MODEL, max_tokens: int = 2048, client: Any = None) -> None:
+    def __init__(
+        self,
+        model: str = DEFAULT_MODEL,
+        max_tokens: int = 2048,
+        client: Any = None,
+        timeout: float | None = None,
+        max_retries: int | None = None,
+    ) -> None:
         if client is None:
             try:
                 import anthropic  # optional dependency, imported lazily so the core stays dependency-free
@@ -173,7 +180,16 @@ class AnthropicRewriter:
                     "the LLM closed loop needs the Anthropic SDK — install it with "
                     '`pip install "congruent[llm]"`'
                 ) from exc
-            client = anthropic.Anthropic()
+            # The SDK default per-request timeout is 10 minutes and it retries
+            # timeouts twice — so a stuck request can hang for ~30 min. Caller-
+            # supplied `timeout`/`max_retries` bound that (a timeout multiplies
+            # across retries, so cap both).
+            opts: dict[str, Any] = {}
+            if timeout is not None:
+                opts["timeout"] = timeout
+            if max_retries is not None:
+                opts["max_retries"] = max_retries
+            client = anthropic.Anthropic(**opts)
         self._client: Any = client
         self.model = model
         self._max_tokens = max_tokens

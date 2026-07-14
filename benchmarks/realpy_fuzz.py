@@ -14,6 +14,12 @@ faithfulness from the deliberate fixed-width wrapping. The only tolerated
 divergence is falling off the end (real Python returns `None`; Congruent models it
 as an error, by design — see README).
 
+The wrapping this file deliberately avoids is covered by a second independent
+oracle, `numpy_oracle.py`: it runs at small widths where overflow is the common
+case and checks the fixed-width arithmetic against numpy's C two's-complement
+scalars. Together the two oracles cover both halves — semantics here, wrapping
+there — with references that share no code with Congruent.
+
 Run it:  python benchmarks/realpy_fuzz.py [--trials N] [--seed S]
 """
 

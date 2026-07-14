@@ -12,6 +12,16 @@ Two questions this directory answers:
 2. **Cost vs. bound** — `bench_scaling.py` times the symbolic stage on the
    loop/array fixtures as `--bound` grows, making the scaling story explicit.
 
+3. **Independent oracles** — the interpreter is the ground truth every other
+   check trusts, so two oracles validate *it* against references that share no
+   code with Congruent. `realpy_fuzz.py` diffs generated functions against real
+   Python (semantics, run wide so nothing overflows). `numpy_oracle.py` covers
+   the complementary half — the two's-complement **wrapping** — against numpy's
+   C fixed-width scalars at small widths where overflow is routine (and matches
+   Congruent's arithmetic exhaustively over every 8-bit operand pair). Both are
+   pinned by a deterministic slice in the test suite (`test_realpy_oracle.py`,
+   `test_numpy_oracle.py`).
+
 ## Run
 
 ```bash

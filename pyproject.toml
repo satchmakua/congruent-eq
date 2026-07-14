@@ -52,6 +52,11 @@ c = [
 llm = [
   "anthropic>=0.40",
 ]
+# Optional independent fixed-width oracle for the fuzzer (numpy's C-level two's-
+# complement arithmetic checks the wrapping model) — see benchmarks/numpy_oracle.py.
+oracle = [
+  "numpy>=1.26",
+]
 
 [project.scripts]
 congruent = "congruent.cli:main"
