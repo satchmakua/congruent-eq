@@ -229,3 +229,73 @@ VERIFIED in 2 round(s), 8.2s wall-clock (model + verification). The loop only ac
 The verified rewrite is committed as the `candidate` in
 [`examples/water_bill.py`](../examples/water_bill.py), so the gallery and test
 suite re-prove it on every run.
+
+---
+
+## Part 3 — real code from a real codebase: numpy's Horner loop
+
+Command: `python examples/live_rewrite.py examples/polyval.py:original --bound 2 --int-width 8`
+
+The target is [`examples/polyval.py`](../examples/polyval.py) — the scalar-integer
+reduction of **numpy's own `numpy.polyval`** (`numpy/lib/_polynomial_impl.py`),
+whose core is exactly `for pv in p: y = y * x + pv` (Horner's method). This is the
+"real code from a real codebase" entry the water_bill routine (authored for this
+repo) is not.
+
+Asked to drop the wasted first multiply (`0 * x`), the live model seeded the
+accumulator with `coeffs[0]` and iterated from index 1 — **and correctly added the
+`if n == 0: return 0` guard**, without which the rewrite would crash on `[]` where
+the original returns `0` (a counterexample Congruent finds instantly). It got that
+right on the first attempt, and Congruent proved it equivalent:
+
+```text
+Live rewrite of examples/polyval.py:original
+model: claude-opus-4-8   bound: 2   ints: 8-bit
+
+original:
+    def original(coeffs: list[int], x: int) -> int:
+        # numpy.polyval's core, as a scalar-int reduction: Horner's method.
+        y = 0
+        for c in coeffs:
+            y = y * x + c
+        return y
+
+── round 1  (model latency: 1.9s) ──
+  candidate:
+      def original(coeffs: list[int], x: int) -> int:
+          n = len(coeffs)
+          if n == 0:
+              return 0
+          y = coeffs[0]
+          for i in range(1, n):
+              y = y * x + coeffs[i]
+          return y
+  verdict:
+    EQUIVALENT  (stage: symbolic, 0.78s)
+      equivalent up to bound 2
+      note: 8-bit two's-complement integers
+      note: holds within bound: lists/strings up to length 2, loops up to 2 iterations
+
+VERIFIED in 1 round(s), 2.8s wall-clock (model + verification). The loop only accepts a proven rewrite.
+```
+
+### Why the small width and bound — and what it exposed
+
+This entry runs at 8-bit / bound 2, not the default 32-bit / bound 8, and that is
+the honest part. The `y = y * x + c` loop multiplies the accumulator by a
+*symbolic* `x` each iteration, so the proof obligation is a polynomial with
+symbolic coefficients — nonlinear bitvector arithmetic, the exact case a
+bit-blasting SMT solver chokes on. It proves in 0.78s here; bound 3 / 8-bit
+already takes ~18s, and 32-bit is intractable even at bound 2.
+
+Getting this example working surfaced a real robustness bug, now fixed: `check()`
+had no solver timeout, so at 32-bit the intractable query made Z3 spin
+*indefinitely* — a genuine hang, not just slowness. `check()` now takes a
+`timeout_ms` (the gallery and `live_rewrite` pass one), so a query the solver
+can't crack degrades to an honest `UNKNOWN` instead of hanging — pinned by
+`test_hard_query_times_out_to_unknown_not_a_hang`. See
+[benchmarks/README.md](../benchmarks/README.md#the-scaling-edge-measured) for the
+nonlinear-multiply cost curve.
+
+The verified rewrite is committed as the `candidate` in
+[`examples/polyval.py`](../examples/polyval.py).

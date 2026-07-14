@@ -25,6 +25,17 @@ EXAMPLES = Path(__file__).resolve().parent
 # Runnable scripts in examples/ that are NOT gallery `original`/`candidate` pairs.
 _NON_GALLERY = {"run_gallery.py", "closed_loop_demo.py", "live_rewrite.py"}
 
+# Every check is capped so a hard query (e.g. a symbolic-coefficient polynomial,
+# where bitvector multiplication blows up) returns UNKNOWN instead of hanging the
+# gallery. Generous vs. the sub-second examples; see benchmarks/README.md.
+_CHECK_TIMEOUT_MS = 20_000
+
+
+def _bound_width(module, default_bound: int) -> tuple[int, int]:
+    """An example may declare its own BOUND / INT_WIDTH (some pairs are only
+    tractable at a smaller width/bound — e.g. polyval's nonlinear multiply)."""
+    return getattr(module, "BOUND", default_bound), getattr(module, "INT_WIDTH", 32)
+
 
 @dataclass
 class Outcome:
@@ -48,10 +59,11 @@ def evaluate(bound: int = 8) -> list[Outcome]:
             continue
         source = path.read_text(encoding="utf-8")
         module = _load(path)
+        b, w = _bound_width(module, bound)
         verdict = check(
             parse_function(source, "original"),
             parse_function(source, "candidate"),
-            bound=bound,
+            bound=b, int_width=w, timeout_ms=_CHECK_TIMEOUT_MS,
         )
         outcomes.append(Outcome(path.stem, module.TITLE, module.EXPECTED, verdict.status.value))
     return outcomes
@@ -69,10 +81,11 @@ def main() -> int:
             continue
         source = path.read_text(encoding="utf-8")
         module = _load(path)
+        b, w = _bound_width(module, 8)
         verdict = check(
             parse_function(source, "original"),
             parse_function(source, "candidate"),
-            bound=8,
+            bound=b, int_width=w, timeout_ms=_CHECK_TIMEOUT_MS,
         )
         print(f"### {module.TITLE}  ({path.name})")
         print(f"    {module.STORY}")

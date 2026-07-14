@@ -31,12 +31,16 @@ def prove_equivalence(
     assumptions: list[str],
     minimize: bool = True,
     cross_check: bool = False,
+    timeout_ms: int | None = None,
 ) -> Verdict:
     """Run the symbolic equivalence query for two (signature-matched) functions.
 
     `UNSAT → EQUIVALENT`, `SAT → COUNTEREXAMPLE` (minimized when `minimize`),
     else `UNKNOWN`. With `cross_check`, CVC5 independently re-decides the query;
-    a disagreement downgrades the verdict to `UNKNOWN`.
+    a disagreement downgrades the verdict to `UNKNOWN`. `timeout_ms` caps each Z3
+    `check()`; on timeout Z3 returns `unknown`, so a hard-but-modeled query (e.g.
+    a high-degree symbolic-coefficient polynomial, where bitvector multiplication
+    blows up) degrades to an honest `UNKNOWN` rather than hanging forever.
 
     Raises:
         symbolic.UnsupportedForProof: a function uses something the symbolic
@@ -49,6 +53,8 @@ def prove_equivalence(
 
     # Decide sat/unsat first with a plain solver (cheaper than Optimize).
     solver = z3.Solver()
+    if timeout_ms is not None:
+        solver.set("timeout", timeout_ms)
     solver.add(*constraints)
 
     start = time.perf_counter()
@@ -94,7 +100,7 @@ def prove_equivalence(
     model = solver.model()
     notes = list(extra)
     if minimize:
-        minimal = _minimize(constraints, inputs, int_width)
+        minimal = _minimize(constraints, inputs, int_width, timeout_ms)
         if minimal is not None:
             model = minimal
             notes.append("counterexample minimized")
@@ -151,14 +157,17 @@ def _equivalence_query(original, candidate, int_width, bound):
     return inputs, constraints, summary_o, summary_c
 
 
-def _minimize(constraints, inputs, int_width) -> z3.ModelRef | None:
+def _minimize(constraints, inputs, int_width, timeout_ms=None) -> z3.ModelRef | None:
     """Shrink an (already-SAT) counterexample with a few cheap solver calls.
 
     Greedy and order-dependent, but fast and robust: first minimize each list's
     length, then pull each scalar int toward zero. Avoids `z3.Optimize`, which is
-    slow over bitvectors. Locks in each gain so later steps can't undo it.
-    """
+    slow over bitvectors. Locks in each gain so later steps can't undo it. A
+    `timeout_ms` on each call just stops shrinking early (the best model so far is
+    still a valid counterexample)."""
     solver = z3.Solver()
+    if timeout_ms is not None:
+        solver.set("timeout", timeout_ms)
     solver.add(*constraints)
     if solver.check() != z3.sat:
         return None  # pragma: no cover — caller already established SAT

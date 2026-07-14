@@ -66,6 +66,7 @@ def check(
     seed: int = 0,
     minimize: bool = True,
     cross_check: bool = False,
+    timeout_ms: int | None = None,
 ) -> Verdict:
     """Decide behavioral equivalence of two functions up to `bound`.
 
@@ -76,6 +77,10 @@ def check(
         int_width: bit width for the fixed-width integer model.
         trials: random inputs to sample in the differential stage.
         seed: RNG seed, so a verdict is reproducible.
+        timeout_ms: per-`check()` cap on the Z3 solve; on timeout the verdict is
+            an honest `UNKNOWN` instead of a hang. Hard queries do exist here —
+            a symbolic-coefficient polynomial unrolled deep enough turns into
+            nonlinear bitvector arithmetic, the classic case Z3 can choke on.
 
     Returns:
         A `Verdict`. `COUNTEREXAMPLE` carries a concrete diverging input;
@@ -144,7 +149,7 @@ def check(
         return prove_equivalence(
             original, candidate,
             bound=bound, int_width=int_width, assumptions=assumptions,
-            minimize=minimize, cross_check=cross_check,
+            minimize=minimize, cross_check=cross_check, timeout_ms=timeout_ms,
         )
     except UnsupportedForProof as exc:
         return unknown(f"symbolic stage declined: {exc}")

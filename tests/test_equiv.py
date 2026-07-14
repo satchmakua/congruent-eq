@@ -58,6 +58,33 @@ def test_verdict_model() -> None:
     assert v.counterexample is None
 
 
+def test_hard_query_times_out_to_unknown_not_a_hang() -> None:
+    # A symbolic-coefficient polynomial (numpy.polyval's Horner loop) unrolled at
+    # 32-bit is nonlinear bitvector arithmetic — Z3 can't crack it, and without a
+    # cap `check()` would hang forever (this actually happened). `timeout_ms` must
+    # turn that into an honest UNKNOWN, promptly. Never a false EQUIVALENT.
+    import time
+
+    horner = (
+        "def f(coeffs: list[int], x: int) -> int:\n"
+        "    y = 0\n    for c in coeffs:\n        y = y * x + c\n    return y"
+    )
+    seeded = (
+        "def f(coeffs: list[int], x: int) -> int:\n"
+        "    n = len(coeffs)\n    if n == 0:\n        return 0\n"
+        "    y = coeffs[0]\n    for i in range(1, n):\n        y = y * x + coeffs[i]\n    return y"
+    )
+    o = parse_function(horner, "f")
+    c = parse_function(seeded, "f")
+    start = time.perf_counter()
+    verdict = congruent.check(o, c, bound=8, int_width=32, timeout_ms=1500)
+    elapsed = time.perf_counter() - start
+
+    assert verdict.status is Status.UNKNOWN
+    assert verdict.status is not Status.EQUIVALENT  # a timeout is never a proof
+    assert elapsed < 20.0, f"timeout not honored: took {elapsed:.1f}s"
+
+
 @pytest.mark.parametrize("name", _fixture_names())
 def test_fixture_is_well_formed(name: str) -> None:
     mod = _load_fixture(name)

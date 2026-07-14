@@ -76,3 +76,26 @@ much more gently. Integer width barely matters in this range (16 vs. 64-bit is
 within noise at b=32). Line count is not what costs — the ~50-line `water_bill`
 example proves in ~0.1s because its only loop is a single shallow pass over the
 input list; a function's price is set by its loop/list depth, not its length.
+
+### The genuinely hard case: symbolic × symbolic (nonlinear bitvectors)
+
+The tables above all multiply by *constants*. The wall is different when a loop
+multiplies two *symbolic* values each iteration — e.g. Horner's method
+(`y = y * x + c`, the `examples/polyval.py` numpy entry), where the proof
+obligation is a polynomial with symbolic coefficients. That is nonlinear
+bitvector arithmetic, the classic case a bit-blasting SMT solver chokes on, and
+it explodes with *both* degree and width:
+
+| polyval (`y = y*x + c`) | 8-bit | 16-bit | 32-bit |
+| --- | --- | --- | --- |
+| bound 2 (degree ≤ 1) | **0.7s** | > 30s | > 30s |
+| bound 3 (degree ≤ 2) | ~18s | — | > 30s |
+| bound 4 (degree ≤ 3) | > 30s | — | > 30s |
+
+So an EQUIVALENT proof here is only practical at small width *and* small bound;
+everything else returns UNKNOWN. This is why `check()` takes a `timeout_ms`:
+without it, a 32-bit polyval query makes Z3 spin **indefinitely** — a true hang.
+With it, the solver gives up cleanly and the verdict is an honest UNKNOWN. A
+false EQUIVALENT is never produced either way. The lesson for users: if a rewrite
+multiplies unknowns by unknowns in a loop, expect UNKNOWN unless you shrink the
+width/bound — and know that UNKNOWN means "not decided," never "not equivalent."

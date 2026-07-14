@@ -81,6 +81,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="per-request API timeout in seconds (default 60)")
     parser.add_argument("--max-retries", type=int, default=1,
                         help="API retries per request (default 1; a timeout multiplies across these)")
+    parser.add_argument("--check-timeout-ms", type=int, default=20_000,
+                        help="per-verification Z3 timeout in ms, so a hard query is UNKNOWN not a hang")
     args = parser.parse_args(argv)
 
     file_part, sep, name = args.target.partition(":")
@@ -104,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     result = refine(
         original_source, name, rewriter,
         goal=args.goal, max_rounds=args.max_rounds,
-        bound=args.bound, int_width=args.int_width,
+        bound=args.bound, int_width=args.int_width, timeout_ms=args.check_timeout_ms,
     )
     total = time.perf_counter() - started
 

@@ -190,7 +190,9 @@ docs/demo.svg   # the README demo image
 and subtly broken ones — with Congruent's verdict on each (binary-search
 midpoint, clamping, list maximum, sum-to-n, counting). The largest entry,
 [`water_bill.py`](examples/water_bill.py), is a ~50-line tiered-billing routine
-whose candidate was written by a live model and accepted only after proof — see
+whose candidate was written by a live model and accepted only after proof; a
+second, [`polyval.py`](examples/polyval.py), is **numpy's own Horner loop**
+seed-optimized by a live model — both captured in
 [docs/live_run.md](docs/live_run.md). Run them all:
 
 ```bash

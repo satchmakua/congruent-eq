@@ -48,6 +48,7 @@ congruent examples/midpoint.c:original examples/midpoint.c:candidate --int-width
 | [keep_positives.py](keep_positives.py) | filter rewrite keeps zeros (`>=` vs `>`) | **COUNTEREXAMPLE** — list in, list out |
 | [string_greeting.py](string_greeting.py) | greeting with swapped concatenation order | **COUNTEREXAMPLE** — `str` in, `str` out |
 | [water_bill.py](water_bill.py) | ~50-line tiered billing, rewritten by a **live model** | **EQUIVALENT** — accepted only after proof |
+| [polyval.py](polyval.py) | **numpy's** Horner loop, seed-optimized by a **live model** | **EQUIVALENT** at 8-bit/bound-2 — the solver's hard case (see [live_run.md](../docs/live_run.md)) |
 
 Each module declares `TITLE`, `STORY`, `EXPECTED`, and an `original` / `candidate`
 pair; `tests/test_examples.py` pins every verdict so the gallery can't rot.
