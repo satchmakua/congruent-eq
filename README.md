@@ -188,7 +188,10 @@ docs/demo.svg   # the README demo image
 
 [`examples/`](examples/) holds realistic AI-refactor pairs — faithful rewrites
 and subtly broken ones — with Congruent's verdict on each (binary-search
-midpoint, clamping, list maximum, sum-to-n, counting). Run them all:
+midpoint, clamping, list maximum, sum-to-n, counting). The largest entry,
+[`water_bill.py`](examples/water_bill.py), is a ~50-line tiered-billing routine
+whose candidate was written by a live model and accepted only after proof — see
+[docs/live_run.md](docs/live_run.md). Run them all:
 
 ```bash
 python examples/run_gallery.py
@@ -204,14 +207,18 @@ equivalent within the bound. **The loop never accepts an unverified rewrite.**
 ```bash
 python examples/closed_loop_demo.py          # offline, deterministic (a scripted LLM)
 python examples/closed_loop_demo.py --live   # a real model via the Anthropic API
+python examples/live_rewrite.py FILE.py:func # point the live loop at your own code
 ```
 
 The demo shows Congruent catching a plausible-but-wrong refactor and guiding the
 fix — e.g. an agent "simplifies" a midpoint to `(a + b) // 2`, Congruent returns
 the exact overflowing input, and the next attempt reverts to the safe form and is
-proven equivalent. The rewriter is pluggable via a `Rewriter` protocol:
-`ScriptedRewriter` (offline, used by the demo and tests) or `AnthropicRewriter`
-(`pip install "congruent[llm]"`, reads `ANTHROPIC_API_KEY`).
+proven equivalent. **This is not hypothetical:** in a live run, a real model
+(`claude-opus-4-8`) made exactly that mistake, was handed the overflowing input,
+and came back with the proven-safe form — the unedited transcript is in
+[docs/live_run.md](docs/live_run.md). The rewriter is pluggable via a `Rewriter`
+protocol: `ScriptedRewriter` (offline, used by the demo and tests) or
+`AnthropicRewriter` (`pip install "congruent[llm]"`, reads `ANTHROPIC_API_KEY`).
 
 ## Benchmarks
 
@@ -227,6 +234,10 @@ deepest check: it generates random function pairs, asks Congruent, and then
 *independently re-validates* each verdict against the concrete interpreter — so a
 false verdict fails loudly. ~4,900 random pairs (plus Z3↔CVC5 cross-checks) pass
 with zero unsound verdicts; a small deterministic batch runs in the test suite.
+
+The measured operating envelope — solver time out to bound 1024, where the
+cliff is, and why the default bound is 8 — is documented in
+[benchmarks/README.md](benchmarks/README.md#the-scaling-edge-measured).
 
 ## Roadmap & progress
 

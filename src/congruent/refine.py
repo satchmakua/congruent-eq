@@ -127,14 +127,22 @@ def _feedback(verdict: Verdict) -> str:
     if verdict.status is Status.ERROR:
         why = "; ".join(verdict.assumptions) or "it could not be parsed or has a different signature"
         return f"Your rewrite could not be checked: {why}. Return a valid function with the same signature."
-    # UNKNOWN
-    return (
+    # UNKNOWN — relay the verifier's stated reason (it is in the verdict notes);
+    # a bare "inconclusive" leaves the model repeating the same unprovable form.
+    reason = verdict.assumptions[-1] if verdict.assumptions else ""
+    message = (
         "Congruent could not verify your rewrite within the bound (the bounded "
-        "check was inconclusive). Try a form that is easier to reason about."
+        "check was inconclusive)."
     )
+    if reason:
+        message += f" The verifier said: {reason}."
+    return message + " Rewrite it in a form the verifier can check."
 
 
 # --- rewriters --------------------------------------------------------------
+
+DEFAULT_MODEL = "claude-opus-4-8"
+
 
 class ScriptedRewriter:
     """A deterministic, offline stand-in for an LLM: replays `attempts` in order,
@@ -156,7 +164,7 @@ class AnthropicRewriter:
     an `ant auth login` profile). The counterexample feedback is threaded into the
     prompt so the model can correct its own mistake."""
 
-    def __init__(self, model: str = "claude-opus-4-8", max_tokens: int = 2048, client: Any = None) -> None:
+    def __init__(self, model: str = DEFAULT_MODEL, max_tokens: int = 2048, client: Any = None) -> None:
         if client is None:
             try:
                 import anthropic  # optional dependency, imported lazily so the core stays dependency-free
@@ -167,12 +175,12 @@ class AnthropicRewriter:
                 ) from exc
             client = anthropic.Anthropic()
         self._client: Any = client
-        self._model = model
+        self.model = model
         self._max_tokens = max_tokens
 
     def __call__(self, task: RewriteTask) -> str:
         message = self._client.messages.create(
-            model=self._model,
+            model=self.model,
             max_tokens=self._max_tokens,
             system=(
                 "You rewrite Python functions to be simpler or faster while preserving "

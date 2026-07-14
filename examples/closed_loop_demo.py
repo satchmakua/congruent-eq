@@ -39,7 +39,7 @@ class Scenario:
 
 SCENARIOS = [
     Scenario(
-        title="Loop → closed form (off-by-one bug, then fixed)",
+        title="Loop → closed form",
         story=(
             "A coding agent is asked to replace an accumulating loop with a closed "
             "form. Its first try drops the +1, so it is wrong for every n. Congruent "
@@ -62,7 +62,7 @@ SCENARIOS = [
         check_kwargs={"bound": 8, "int_width": 32},
     ),
     Scenario(
-        title="Binary-search midpoint (integer-overflow bug, then fixed)",
+        title="Binary-search midpoint (the classic overflow trap)",
         story=(
             "The original computes a midpoint the overflow-safe way. The agent "
             "'simplifies' it to (a + b) // 2 — the classic bug that overflows for "
@@ -88,18 +88,26 @@ def _print_source(label: str, src: str) -> None:
 
 
 def _run(scenario: Scenario, live: bool) -> RefineResult:
+    if live:
+        rewriter = AnthropicRewriter()
+        # The scripted story narrates the canned attempts; a live model chooses
+        # its own, so narrate only what is actually promised: the loop.
+        story = (
+            f"A real model ({rewriter.model}) is asked to {scenario.goal}. "
+            f"Congruent verifies each attempt; any counterexample is fed back "
+            f"until a rewrite is proven equivalent."
+        )
+    else:
+        rewriter = ScriptedRewriter(scenario.scripted_attempts)
+        story = scenario.story
+
     print("=" * 78)
     print(scenario.title)
     print("-" * 78)
-    print(scenario.story)
+    print(story)
     print()
     _print_source("original:", scenario.original)
     print()
-
-    if live:
-        rewriter = AnthropicRewriter()
-    else:
-        rewriter = ScriptedRewriter(scenario.scripted_attempts)
 
     result = refine(
         scenario.original, scenario.name, rewriter, goal=scenario.goal, **scenario.check_kwargs
@@ -133,6 +141,12 @@ def _run(scenario: Scenario, live: bool) -> RefineResult:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows consoles default to a legacy code page (e.g. cp1252) that cannot
+    # encode the arrows/check marks below; force UTF-8 with a safe fallback.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true",
                         help="use the real Anthropic API instead of the scripted LLM")

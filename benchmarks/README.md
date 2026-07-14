@@ -34,5 +34,35 @@ sum_to_n                EQUIVALENT      EQUIVALENT       21.1ms  ok
 10/10 verdicts match expectation; 0 unsound
 ```
 
-Still planned for M3: a curated gallery of real AI-refactor pairs and a README
-demo image.
+## The scaling edge (measured)
+
+Where the symbolic stage actually starts to hurt, measured 2026-07-13 on one
+consumer Windows 11 box (Python 3.11, z3-solver 4.16, 32-bit ints, `EQUIVALENT`
+proofs — the expensive path, since a proof must close the whole space):
+
+| fixture | b=8 | b=32 | b=128 | b=256 | b=512 | b=1024 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `loop_reorder` (scalar loop, reversed accumulation) | 28ms | 77ms | 0.58s | 3.4s | 16.9s | **102s** |
+| `sum_to_n` (loop vs. nonlinear closed form) | 31ms | 51ms | 0.38s | 1.4s | 8.8s | 39s |
+| `array_len_count` (list iteration vs. `len`) | 27ms | 65ms | 0.28s | 0.66s | 2.2s | 7.9s |
+| `array_sum_reorder` (two list loops, reordered) | 34ms | 94ms | 0.37s | 0.73s | 1.7s | 2.9s |
+| `water_bill` example (~50-line billing routine) | 0.12s | 0.12s | — | — | — | — (0.21s at b=64) |
+
+The honest envelope on this hardware:
+
+- **b ≤ 32** — interactive (≤~0.1s), and where real refactor bugs live:
+  every counterexample in the gallery and fixture set manifests at tiny inputs
+  (the small-scope hypothesis is why the default is `--bound 8`).
+- **b ≤ 128** — sub-second. Fine for CI.
+- **b = 256–512** — seconds to tens of seconds; noticeable but usable.
+- **b = 1024** — minutes for scalar-loop pairs. This is the cliff. Growth for
+  the worst fixture is ~6× per bound doubling past 256, so b=2048 would be
+  tens of minutes — plan accordingly or don't go there.
+
+Two shape notes: unrolled *scalar* loops (where each iteration compounds
+arithmetic on one accumulator) hit the cliff hardest, and nonlinear terms
+(`sum_to_n`'s `n*(n+1)//2`) cost more than linear ones; list-driven loops scale
+much more gently. Integer width barely matters in this range (16 vs. 64-bit is
+within noise at b=32). Line count is not what costs — the ~50-line `water_bill`
+example proves in ~0.1s because its only loop is a single shallow pass over the
+input list; a function's price is set by its loop/list depth, not its length.

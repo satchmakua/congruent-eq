@@ -23,7 +23,7 @@ from congruent.report import format_verdict  # noqa: E402
 EXAMPLES = Path(__file__).resolve().parent
 
 # Runnable scripts in examples/ that are NOT gallery `original`/`candidate` pairs.
-_NON_GALLERY = {"run_gallery.py", "closed_loop_demo.py"}
+_NON_GALLERY = {"run_gallery.py", "closed_loop_demo.py", "live_rewrite.py"}
 
 
 @dataclass
@@ -58,6 +58,12 @@ def evaluate(bound: int = 8) -> list[Outcome]:
 
 
 def main() -> int:
+    # Windows consoles default to a legacy code page (e.g. cp1252); force UTF-8
+    # so gallery titles/stories can use any character without crashing the run.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
     for path in sorted(EXAMPLES.glob("*.py")):
         if path.name in _NON_GALLERY:
             continue

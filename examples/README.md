@@ -17,7 +17,12 @@ is fed back until the rewrite is *proven* equivalent. Runs offline by default:
 ```bash
 python examples/closed_loop_demo.py          # scripted LLM, deterministic
 python examples/closed_loop_demo.py --live   # real Anthropic API (needs the [llm] extra + a key)
+python examples/live_rewrite.py FILE.py:func # the same live loop, pointed at your code
 ```
+
+Captured live sessions (a real model caught proposing the midpoint-overflow bug,
+and a ~50-line billing routine rewritten and proven) are in
+[docs/live_run.md](../docs/live_run.md).
 
 Or check one pair with the CLI:
 
@@ -42,6 +47,7 @@ congruent examples/midpoint.c:original examples/midpoint.c:candidate --int-width
 | [count_positives.py](count_positives.py) | `>` quietly changed to `>=` | **COUNTEREXAMPLE** — lists with a `0` |
 | [keep_positives.py](keep_positives.py) | filter rewrite keeps zeros (`>=` vs `>`) | **COUNTEREXAMPLE** — list in, list out |
 | [string_greeting.py](string_greeting.py) | greeting with swapped concatenation order | **COUNTEREXAMPLE** — `str` in, `str` out |
+| [water_bill.py](water_bill.py) | ~50-line tiered billing, rewritten by a **live model** | **EQUIVALENT** — accepted only after proof |
 
 Each module declares `TITLE`, `STORY`, `EXPECTED`, and an `original` / `candidate`
 pair; `tests/test_examples.py` pins every verdict so the gallery can't rot.

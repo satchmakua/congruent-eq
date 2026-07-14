@@ -25,3 +25,25 @@ def test_closed_loop_demo_verifies_offline() -> None:
     import closed_loop_demo  # noqa: E402  (examples dir is already on sys.path)
 
     assert closed_loop_demo.main([]) == 0
+
+
+_WATER_BILL = Path(__file__).resolve().parent.parent / "examples" / "water_bill.py"
+
+
+def test_live_rewrite_extracts_the_named_function() -> None:
+    # live_rewrite.py backs a documented command (`live_rewrite.py FILE.py:func`);
+    # its source-extraction is pure logic and must not rot silently, even though
+    # the surrounding loop is network-only.
+    import live_rewrite  # noqa: E402  (examples dir is already on sys.path)
+
+    src = live_rewrite._extract_function(_WATER_BILL, "original")
+    assert src.startswith("def original(")
+    assert "for r in readings:" in src  # the whole body, not just the signature
+
+
+def test_live_rewrite_reports_a_missing_function() -> None:
+    import live_rewrite  # noqa: E402
+    import pytest
+
+    with pytest.raises(SystemExit):
+        live_rewrite._extract_function(_WATER_BILL, "nope")

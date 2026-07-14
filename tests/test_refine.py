@@ -86,6 +86,28 @@ def test_a_parse_error_becomes_actionable_feedback() -> None:
     assert result.verified  # recovered on the second attempt
 
 
+def test_unknown_feedback_relays_the_verifiers_reason() -> None:
+    # Seen live: a model deleted a "dead" loop-temp initializer — a correct
+    # simplification the v1 symbolic stage declines to model — and, told only
+    # "inconclusive", re-proposed the same unprovable form every round. The
+    # UNKNOWN feedback must carry the verifier's stated reason.
+    from congruent.equiv import Verdict
+    from congruent.refine import _feedback
+
+    verdict = Verdict(
+        status=Status.UNKNOWN, bound=8,
+        assumptions=[
+            "32-bit two's-complement integers",
+            "no counterexample found by differential testing; equivalence not "
+            "proven (symbolic stage declined: variable(s) ['d'] assigned in a "
+            "loop but not initialized before it)",
+        ],
+    )
+    feedback = _feedback(verdict)
+    assert feedback is not None
+    assert "assigned in a loop but not initialized" in feedback
+
+
 def test_extract_function_source_prefers_the_named_code_block() -> None:
     reply = (
         "Here's the fix:\n\n"
