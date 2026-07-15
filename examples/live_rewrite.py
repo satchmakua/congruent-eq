@@ -6,7 +6,7 @@ is proven equivalent — or the round budget runs out.
     python examples/live_rewrite.py mycode.py:parse_flags --goal "use one loop"
 
 This is the general-purpose version of closed_loop_demo.py: same loop, your
-code. Needs `pip install "congruent[llm]"` and `ANTHROPIC_API_KEY`.
+code. Needs `pip install "congruent-eq[llm]"` and `ANTHROPIC_API_KEY`.
 """
 
 from __future__ import annotations

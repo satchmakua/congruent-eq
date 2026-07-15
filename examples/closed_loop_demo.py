@@ -4,7 +4,7 @@ each counterexample is fed back until the rewrite is *proven* equivalent.
 By default this runs fully offline with a `ScriptedRewriter` that replays what an
 LLM typically does — a plausible-but-buggy first attempt, then a fix once
 Congruent hands back the exact failing input. Pass `--live` to drive a real model
-through the Anthropic API instead (needs `pip install "congruent[llm]"` and a key).
+through the Anthropic API instead (needs `pip install "congruent-eq[llm]"` and a key).
 
     python examples/closed_loop_demo.py            # offline, deterministic
     python examples/closed_loop_demo.py --live     # real LLM in the loop

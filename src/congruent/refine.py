@@ -8,7 +8,7 @@ This is the stretch item from ROADMAP.md M7. The LLM is pluggable via the
     - `ScriptedRewriter` replays a fixed list of attempts (no network) — used by
       the demo and the tests.
     - `AnthropicRewriter` calls the real Anthropic API (needs `pip install
-      congruent[llm]` and a key); the counterexample feedback goes straight into
+      congruent-eq[llm]` and a key); the counterexample feedback goes straight into
       the prompt so the model can fix its own mistake.
 
 The value proposition: Congruent turns "the model said it refactored this
@@ -160,7 +160,7 @@ class ScriptedRewriter:
 
 class AnthropicRewriter:
     """Calls the Anthropic API to propose and repair rewrites. Needs the optional
-    dependency (`pip install "congruent[llm]"`) and a key (`ANTHROPIC_API_KEY`, or
+    dependency (`pip install "congruent-eq[llm]"`) and a key (`ANTHROPIC_API_KEY`, or
     an `ant auth login` profile). The counterexample feedback is threaded into the
     prompt so the model can correct its own mistake."""
 
@@ -178,7 +178,7 @@ class AnthropicRewriter:
             except ImportError as exc:  # pragma: no cover - exercised only without the extra installed
                 raise ImportError(
                     "the LLM closed loop needs the Anthropic SDK — install it with "
-                    '`pip install "congruent[llm]"`'
+                    '`pip install "congruent-eq[llm]"`'
                 ) from exc
             # The SDK default per-request timeout is 10 minutes and it retries
             # timeouts twice — so a stuck request can hang for ~30 min. Caller-

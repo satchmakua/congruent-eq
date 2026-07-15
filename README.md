@@ -143,6 +143,15 @@ EQUIVALENT  (stage: symbolic, 0.00s)
 
 ## Install
 
+Congruent is distributed on PyPI as **`congruent-eq`**; you still `import congruent`
+and run the `congruent` CLI.
+
+```bash
+pip install congruent-eq
+```
+
+Or from source:
+
 ```bash
 git clone <repo-url> congruent
 cd congruent
@@ -220,7 +229,7 @@ proven equivalent. **This is not hypothetical:** in a live run, a real model
 and came back with the proven-safe form — the unedited transcript is in
 [docs/live_run.md](docs/live_run.md). The rewriter is pluggable via a `Rewriter`
 protocol: `ScriptedRewriter` (offline, used by the demo and tests) or
-`AnthropicRewriter` (`pip install "congruent[llm]"`, reads `ANTHROPIC_API_KEY`).
+`AnthropicRewriter` (`pip install "congruent-eq[llm]"`, reads `ANTHROPIC_API_KEY`).
 
 ## Benchmarks
 

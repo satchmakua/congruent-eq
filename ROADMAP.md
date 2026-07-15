@@ -84,7 +84,7 @@ floor `//`/`%`; sound `UNKNOWN` fallback for anything not yet modeled.
 - [x] *(Stretch)* **auto-check LLM-suggested refactors** (`refine.py`, closed
       loop: AI proposes, Congruent verifies, counterexamples feed back until the
       rewrite is *proven* equivalent). The LLM is pluggable — `AnthropicRewriter`
-      drives the real API (`pip install "congruent[llm]"`), while `ScriptedRewriter`
+      drives the real API (`pip install "congruent-eq[llm]"`), while `ScriptedRewriter`
       makes the loop testable and demoable offline. See `examples/closed_loop_demo.py`.
 
 ---

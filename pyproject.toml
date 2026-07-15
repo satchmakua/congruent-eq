@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "congruent"
+name = "congruent-eq"
 version = "0.0.1"
 description = "Prove behavioral equivalence between an original function and an AI-rewritten one within bounds, or return the concrete input that breaks it."
 readme = "README.md"
