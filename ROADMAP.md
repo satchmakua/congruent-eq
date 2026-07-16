@@ -1,9 +1,9 @@
 # Roadmap
 
-Congruent ships publicly once the demo lands (M3) — the honest, bounded tool is
+Congruent shipped publicly when the demo landed (M3) — the honest, bounded tool is
 the product, not completeness. A trustworthy verdict-or-counterexample is the bar.
 
-**Legend:** ✅ done · 🔜 next · ⬜ planned
+**Legend:** ✅ done
 
 ---
 
@@ -39,17 +39,17 @@ floor `//`/`%`; sound `UNKNOWN` fallback for anything not yet modeled.
 
 ---
 
-## Next up (ordered)
+## Done (continued)
 
-### M4 — Early exit in loops ✅ *(`return` done; `break`/`continue` deferred)*
+### M4 — Early exit in loops ✅
 - Unified the symbolic interpreter into one state-threading pass carrying
   `(env, returned, return_value)`, so a `return` works *anywhere* — including
   inside a loop. Falling off the end without returning is folded into the error
   condition (Python would return None), which also removed an old `UnsupportedForProof`.
 - Search now verifies: `contains` (early-return vs flag, EQ), `all_positive`
   (short-circuit, EQ), find-first off-by-one (CX).
-- **Remaining:** `break` / `continue` (still rejected by the parser) — they need
-  per-loop `broken` / per-iteration `continued` guards threaded like `returned`.
+- `break` / `continue` followed in **M7** below, threaded the same way (per-loop
+  `broken`, per-iteration `continued`).
 
 ### M5 — Counterexample minimization ✅
 - Symbolic-found counterexamples are shrunk with a few cheap incremental solver
@@ -68,7 +68,7 @@ floor `//`/`%`; sound `UNKNOWN` fallback for anything not yet modeled.
 - map (`x*2` vs `x+x`) and filter rewrites prove EQUIVALENT; off-by-one map /
   `>`-vs-`>=` filter / non-commutative concat yield counterexamples.
 
-### M7 — Reach & robustness ✅ *(core; stretch items remain)*
+### M7 — Reach & robustness ✅ *(core + stretch)*
 - [x] `break` / `continue` inside loops — each loop owns a `broken` (accumulates,
       stops the loop) and a per-iteration `continued`, threaded like `returned`.
 - [x] CVC5 cross-check backend — Z3 stays primary; CVC5 independently re-decides

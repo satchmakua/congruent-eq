@@ -15,14 +15,6 @@ from __future__ import annotations
 import z3
 
 
-def available() -> bool:
-    try:
-        import cvc5  # noqa: F401
-        return True
-    except ImportError:
-        return False
-
-
 def cvc5_decide(constraints: list[z3.BoolRef]) -> str | None:
     """Decide a Z3 constraint set with CVC5; return "sat"/"unsat"/"unknown".
 

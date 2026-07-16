@@ -24,7 +24,13 @@ def format_verdict(verdict: Verdict) -> str:
     lines.append(header)
 
     if verdict.status is Status.EQUIVALENT:
-        lines.append(f"  equivalent up to bound {verdict.bound}")
+        # A loop-free pair with no sequence I/O is decided over the *whole* input
+        # space at this width — saying "up to bound N" there would undersell a
+        # complete proof (and contradict the scope note printed just below).
+        if verdict.complete:
+            lines.append("  equivalent (complete — no bound needed)")
+        else:
+            lines.append(f"  equivalent up to bound {verdict.bound}")
     elif verdict.status is Status.COUNTEREXAMPLE and verdict.counterexample is not None:
         cx = verdict.counterexample
         shown = ", ".join(f"{k} = {v!r}" for k, v in cx.inputs.items())

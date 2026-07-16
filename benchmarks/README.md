@@ -1,6 +1,6 @@
 # Benchmarks
 
-Two questions this directory answers:
+Three questions this directory answers:
 
 1. **Recall on known pairs** — `bench_recall.py` runs `congruent.check` over every
    `tests/fixtures/` pair and tabulates the verdict against its declared
@@ -27,9 +27,14 @@ Two questions this directory answers:
 ```bash
 python benchmarks/bench_recall.py            # add --bound N to change the bound
 python benchmarks/bench_scaling.py           # add --bounds 2,4,8,16,32
+python benchmarks/fuzz.py                    # random pairs, each verdict re-checked
+python benchmarks/realpy_fuzz.py             # interpreter vs. real Python (semantics oracle)
+python benchmarks/numpy_oracle.py            # wrapping vs. numpy fixed-width ints (overflow oracle)
 ```
 
-Both add `src/` to the path themselves, so no install/`PYTHONPATH` is needed.
+All add `src/` to the path themselves, so no install/`PYTHONPATH` is needed. The
+three fuzz/oracle scripts take `--trials N --seed N` (and `numpy_oracle.py` also
+`--width N`). `numpy_oracle.py` needs numpy: `pip install "congruent-eq[oracle]"`.
 
 ## Sample output
 
@@ -41,7 +46,7 @@ loop_reorder            EQUIVALENT      EQUIVALENT        6.1ms  ok
 midpoint_overflow       COUNTEREXAMPLE  COUNTEREXAMPLE        -  ok
 sum_to_n                EQUIVALENT      EQUIVALENT       21.1ms  ok
 ...
-10/10 verdicts match expectation; 0 unsound
+16/16 verdicts match expectation; 0 unsound
 ```
 
 ## The scaling edge (measured)

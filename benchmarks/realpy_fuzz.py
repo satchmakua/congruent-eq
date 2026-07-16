@@ -10,9 +10,11 @@ equivalent to a function that always crashes.)
 This uses an INDEPENDENT oracle: unparse each generated IR function back to real
 Python source, `exec` it, and compare its behavior to the concrete interpreter.
 Values are kept small at width 64 so nothing overflows — that isolates *semantic*
-faithfulness from the deliberate fixed-width wrapping. The only tolerated
-divergence is falling off the end (real Python returns `None`; Congruent models it
-as an error, by design — see README).
+faithfulness from the deliberate fixed-width wrapping. No divergence is tolerated:
+outcomes must match exactly. Falling off the end is compared strictly too — real
+Python returns `None` and the interpreter models it as that same value, distinct
+from a raised exception (see README). Only inputs outside the bounded domain are
+skipped.
 
 The wrapping this file deliberately avoids is covered by a second independent
 oracle, `numpy_oracle.py`: it runs at small widths where overflow is the common
@@ -321,8 +323,8 @@ def _gen_arg(rng, type_name):
 
 
 def run(trials: int = 3000, seed: int = 0, inputs: int = 8, report=lambda _m: None) -> int:
-    """Generate `trials` functions; return the count of interpreter-vs-Python mismatches
-    (fall-off-the-end, which Congruent models as an error by design, is not counted)."""
+    """Generate `trials` functions; return the count of interpreter-vs-Python mismatches.
+    Outcomes must match exactly; only inputs outside the bounded domain are skipped."""
     rng = random.Random(seed)
     mismatches = 0
     for _ in range(trials):
@@ -334,8 +336,8 @@ def run(trials: int = 3000, seed: int = 0, inputs: int = 8, report=lambda _m: No
             if diff[0] == "oob":
                 continue  # input outside the bounded domain
             real = _real_outcome(src, "f", args)
-            if real == diff or (real == ("none",) and diff[0] == "err"):
-                continue  # match, or the documented fall-off-the-end model
+            if real == diff:
+                continue  # exact match — falling off the end must agree too
             mismatches += 1
             report(f"MISMATCH args={args} real={real} diff={diff}\n{src}")
     return mismatches

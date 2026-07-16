@@ -269,7 +269,7 @@ def _expr_family(rng):
     """A pure arithmetic expression over x, y, z — maximal +/-/* overflow."""
     names = ["x", "y", "z"]
     fn = _fn("f", names, [ir.Return(_rnd_int(rng, rng.randint(2, 4), names))])
-    return fn, ["x", "y", "z"], None
+    return fn, None  # no loop-count param; every param is boundary-biased
 
 
 def _accum_family(rng):
@@ -288,7 +288,7 @@ def _accum_family(rng):
         ir.For("i", ir.Const(0, "int"), ir.Name("n"), tuple(inner)),
         ir.Return(ir.Name("total")),
     ]
-    return _fn("f", ["n", "x"], body), ["x"], "n"  # x boundary-biased; n is the loop count
+    return _fn("f", ["n", "x"], body), "n"  # n is the loop count; every other param is boundary-biased
 
 
 FAMILIES = [_expr_family, _expr_family, _accum_family]  # weight expressions higher
@@ -300,7 +300,7 @@ def _boundary_int(rng, width):
                        rng.randint(imin, imax), rng.randint(imin, imax)])
 
 
-def _gen_args(rng, boundary_params, count_param, params, width):
+def _gen_args(rng, count_param, params, width):
     args = []
     for p in params:
         if p.name == count_param:
@@ -317,9 +317,9 @@ def run(trials: int = 4000, seed: int = 0, width: int = 8, inputs: int = 8,
     rng = random.Random(seed)
     mismatches = 0
     for _ in range(trials):
-        fn, boundary_params, count_param = rng.choice(FAMILIES)(rng)
+        fn, count_param = rng.choice(FAMILIES)(rng)
         for _ in range(inputs):
-            args = _gen_args(rng, boundary_params, count_param, fn.params, width)
+            args = _gen_args(rng, count_param, fn.params, width)
             diff = _diff_outcome(fn, args, width)
             npy = _numpy_outcome(fn, args, width)
             if diff[0] == "oob" or npy[0] == "oob":

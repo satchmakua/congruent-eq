@@ -78,12 +78,14 @@ def prove_equivalence(
 
     if result == z3.unsat:
         elapsed = time.perf_counter() - start
+        note, complete = _scope_note(original, summary_o, summary_c, int_width, bound)
         return Verdict(
             status=Status.EQUIVALENT,
             bound=bound,
+            complete=complete,
             solver_time=elapsed,
             stage="symbolic",
-            assumptions=extra + [_scope_note(original, candidate, summary_o, summary_c, int_width, bound)],
+            assumptions=extra + [note],
         )
 
     if result == z3.unknown:
@@ -106,7 +108,7 @@ def prove_equivalence(
             notes.append("counterexample minimized")
     elapsed = time.perf_counter() - start
 
-    cx = _decode_model(model, inputs, original.params, summary_o, summary_c, int_width, bound)
+    cx = _decode_model(model, inputs, original.params, summary_o, summary_c, int_width)
     return Verdict(
         status=Status.COUNTEREXAMPLE,
         bound=bound,
@@ -150,7 +152,7 @@ def _equivalence_query(original, candidate, int_width, bound):
             z3.And(both_ok, summary_o.fell_off != summary_c.fell_off),
             z3.And(
                 both_ok, z3.Not(summary_o.fell_off), z3.Not(summary_c.fell_off),
-                _differ(summary_o.output, summary_c.output, int_width, bound),
+                _differ(summary_o.output, summary_c.output, int_width),
             ),
         )
     )
@@ -202,7 +204,9 @@ def _minimize(constraints, inputs, int_width, timeout_ms=None) -> z3.ModelRef | 
     return model
 
 
-def _scope_note(original, candidate, summary_o, summary_c, int_width, bound) -> str:
+def _scope_note(original, summary_o, summary_c, int_width, bound) -> tuple[str, bool]:
+    """The scope caveat for an EQUIVALENT verdict, plus whether it is *complete*
+    (nothing was bounded away, so `bound` is not a limitation on the result)."""
     bounded_bits = []
     seq_types = {"list[int]", "str"}
     seq_io = any(p.type_name in seq_types for p in original.params) or original.return_type in seq_types
@@ -211,13 +215,13 @@ def _scope_note(original, candidate, summary_o, summary_c, int_width, bound) -> 
     if summary_o.unrolled or summary_c.unrolled:
         bounded_bits.append(f"loops up to {bound} iterations")
     if bounded_bits:
-        return "holds within bound: " + ", ".join(bounded_bits)
+        return "holds within bound: " + ", ".join(bounded_bits), False
     if original.preconditions:
-        return f"complete: agree on all {int_width}-bit inputs satisfying the precondition"
-    return f"complete: agree on all {int_width}-bit inputs (no loops to bound)"
+        return f"complete: agree on all {int_width}-bit inputs satisfying the precondition", True
+    return f"complete: agree on all {int_width}-bit inputs (no loops to bound)", True
 
 
-def _differ(a, b, int_width: int, bound: int) -> z3.ExprRef:
+def _differ(a, b, int_width: int) -> z3.ExprRef:
     """Assertion that the two outputs disagree, coercing to a common sort."""
     if isinstance(a, symbolic.SymList) and isinstance(b, symbolic.SymList):
         # Differ if lengths differ, or some in-range element differs. Compare over
@@ -245,23 +249,22 @@ def _decode_model(
     summary_original: symbolic.Summary,
     summary_candidate: symbolic.Summary,
     int_width: int,
-    bound: int,
 ) -> Counterexample:
     """Turn a satisfying model into a concrete `Counterexample`."""
     concrete: dict[str, object] = {}
     for param, value in zip(params, inputs):
         if isinstance(value, symbolic.SymList):
-            concrete[param.name] = _decode_seq(model, value, int_width, bound)
+            concrete[param.name] = _decode_seq(model, value, int_width)
         else:
             concrete[param.name] = _to_py(model.eval(value, model_completion=True))
     return Counterexample(
         inputs=concrete,
-        original_output=_decode_output(model, summary_original, int_width, bound),
-        candidate_output=_decode_output(model, summary_candidate, int_width, bound),
+        original_output=_decode_output(model, summary_original, int_width),
+        candidate_output=_decode_output(model, summary_candidate, int_width),
     )
 
 
-def _decode_seq(model: z3.ModelRef, sym: symbolic.SymList, int_width: int, bound: int) -> object:
+def _decode_seq(model: z3.ModelRef, sym: symbolic.SymList, int_width: int) -> object:
     """Decode a SymList model value: a `str` (kind char) or a `list[int]`."""
     length = int(_to_py(model.eval(sym.length, model_completion=True)))
     length = max(0, min(length, sym.cap))
@@ -274,7 +277,7 @@ def _decode_seq(model: z3.ModelRef, sym: symbolic.SymList, int_width: int, bound
     return elements
 
 
-def _decode_output(model: z3.ModelRef, summary: symbolic.Summary, int_width: int, bound: int) -> object:
+def _decode_output(model: z3.ModelRef, summary: symbolic.Summary, int_width: int) -> object:
     """A function's observable result in the model: a value, a sequence, None, or a raised error."""
     if z3.is_true(model.eval(summary.error, model_completion=True)):
         return "<raises>"
@@ -282,7 +285,7 @@ def _decode_output(model: z3.ModelRef, summary: symbolic.Summary, int_width: int
         return None  # fell off the end without returning
     out = summary.output
     if isinstance(out, symbolic.SymList):
-        return _decode_seq(model, out, int_width, bound)
+        return _decode_seq(model, out, int_width)
     return _to_py(model.eval(out, model_completion=True))
 
 

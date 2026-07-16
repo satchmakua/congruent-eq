@@ -1,9 +1,11 @@
 # Live runs: real models, caught and corrected
 
-Two live sessions against the Anthropic API, captured verbatim on 2026-07-13.
-Part 1 is the README's closed-loop demo run live. Part 2 points the loop at a
-realistic-scale function — and includes a failure the first session exposed,
-because that failure is the tool working as designed.
+Live sessions against the Anthropic API, captured verbatim: Parts 1–2 on
+2026-07-13, Part 3 on 2026-07-14. Part 1 is the README's closed-loop demo run
+live. Part 2 points the loop at a realistic-scale function — and includes a
+failure the first session exposed, because that failure is the tool working as
+designed. Part 3 points the loop at real code from a real codebase (numpy's
+`polyval`), and is the entry that surfaced the solver-hang bug.
 
 | | |
 | --- | --- |

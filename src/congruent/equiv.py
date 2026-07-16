@@ -9,9 +9,10 @@ point. `check()` runs the layered pipeline, escalating from cheap to expensive:
 A counterexample at any stage short-circuits and is returned immediately.
 Reaching `UNSAT` in the symbolic stage yields `EQUIVALENT up to bound N`.
 
-At M0 only Stage 1 exists, so the possible verdicts are COUNTEREXAMPLE (a
-disagreement was found), UNKNOWN (none found — NOT a proof of equivalence), or
-ERROR (e.g. mismatched signatures). EQUIVALENT arrives with Stage 2.
+Both stages have shipped. The possible verdicts are EQUIVALENT (no diverging
+input exists within the bound), COUNTEREXAMPLE (a concrete disagreement was
+found), UNKNOWN (the symbolic stage could not decide — NOT a proof of
+equivalence), or ERROR (e.g. mismatched signatures).
 """
 
 from __future__ import annotations
@@ -54,6 +55,9 @@ class Verdict:
     solver_time: float | None = None
     stage: str | None = None          # which stage decided: "difftest" | "symbolic"
     assumptions: list[str] = field(default_factory=list)
+    complete: bool = False            # EQUIVALENT holds for *every* input at this
+    #                                   width, not just up to `bound` (no loops, no
+    #                                   sequence I/O) — so `bound` is not a caveat.
 
 
 def check(
@@ -77,15 +81,24 @@ def check(
         int_width: bit width for the fixed-width integer model.
         trials: random inputs to sample in the differential stage.
         seed: RNG seed, so a verdict is reproducible.
+        minimize: shrink a symbolic counterexample to the smallest diverging
+            input before reporting it.
+        cross_check: independently re-decide the query with CVC5; a backend
+            disagreement downgrades the verdict to UNKNOWN rather than trusting
+            either result.
         timeout_ms: per-`check()` cap on the Z3 solve; on timeout the verdict is
             an honest `UNKNOWN` instead of a hang. Hard queries do exist here —
             a symbolic-coefficient polynomial unrolled deep enough turns into
             nonlinear bitvector arithmetic, the classic case Z3 can choke on.
 
     Returns:
-        A `Verdict`. `COUNTEREXAMPLE` carries a concrete diverging input;
-        `UNKNOWN` means difftest found nothing (NOT a proof — Stage 2 lands in
-        M1); `ERROR` covers e.g. mismatched signatures.
+        A `Verdict`. `EQUIVALENT` means no diverging input exists within `bound`
+        (proved UNSAT by the symbolic stage — never a claim beyond the bound).
+        `COUNTEREXAMPLE` carries a concrete diverging input. `UNKNOWN` is the
+        honest no-answer: z3 is absent, the symbolic stage declined the program,
+        the solver timed out or gave up, or a CVC5 cross-check disagreed — in no
+        case is it a proof of equivalence. `ERROR` covers e.g. mismatched
+        signatures.
     """
     from congruent.difftest import find_counterexample  # local import avoids a cycle
 

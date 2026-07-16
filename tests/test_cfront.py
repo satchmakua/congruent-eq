@@ -67,3 +67,19 @@ def test_c_truncating_division_differs_from_python_floor() -> None:
 def test_c_unsupported_constructs_raise(src: str) -> None:
     with pytest.raises(UnsupportedConstruct):
         parse_c_function(src, "f")
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "int f(int x) { break; return x; }",
+        "int f(int x) { continue; return x; }",
+        "int f(int x) { if (x > 0) { break; } return x; }",
+    ],
+)
+def test_c_loop_control_outside_a_loop_is_rejected(src: str) -> None:
+    # The C front end used to accept these silently — the Python front end has
+    # always rejected them — handing the two stages an IR they model
+    # inconsistently. Both front ends must enforce the same rule.
+    with pytest.raises(UnsupportedConstruct, match="outside a loop"):
+        parse_c_function(src, "f")

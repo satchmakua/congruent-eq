@@ -7,7 +7,7 @@ pipeline, and prints the formatted verdict. Exit codes:
 
     0  EQUIVALENT
     1  COUNTEREXAMPLE
-    2  UNKNOWN / ERROR / engine not yet implemented
+    2  UNKNOWN / ERROR
 """
 
 from __future__ import annotations
@@ -60,6 +60,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--cross-check", action="store_true",
         help="independently re-decide with CVC5 and flag any disagreement",
     )
+    parser.add_argument(
+        "--timeout", type=float, default=300.0, metavar="SECONDS",
+        help="give up on the solver after SECONDS and report UNKNOWN (default: 300; "
+             "0 = no limit). Some queries — e.g. multiplying unknowns by unknowns in a "
+             "loop — are intractable and would otherwise run forever",
+    )
     return parser
 
 
@@ -73,6 +79,14 @@ def _parse_file(path: str, name: str):
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows consoles default to a legacy code page (e.g. cp1252). A string
+    # counterexample can decode to *any* code point (see solver._decode_seq), so
+    # without this a perfectly good verdict dies with UnicodeEncodeError instead
+    # of being printed.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -93,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     verdict = check(
         original, candidate, bound=args.bound, int_width=args.int_width,
         minimize=args.minimize, cross_check=args.cross_check,
+        timeout_ms=int(args.timeout * 1000) if args.timeout > 0 else None,
     )
     print(format_verdict(verdict))
     return {

@@ -1,8 +1,8 @@
 # Congruent
 
-> Given an original function and an AI-rewritten one, **prove** behavioral equivalence within bounds — or return the concrete input that breaks it.
+> Given an original function and an AI-rewritten one, **prove** behavioral equivalence within bounds, return the concrete input that breaks it — or admit it doesn't know.
 
-Coding agents refactor, migrate, and "optimize" code constantly. The honest answer to *"did this preserve behavior?"* is usually tests plus vibes. Congruent gives a real answer for a deliberately narrow slice of the problem: **`EQUIVALENT up to bound N`** or **`COUNTEREXAMPLE: <concrete input>`** — no magic in between.
+Coding agents refactor, migrate, and "optimize" code constantly. The honest answer to *"did this preserve behavior?"* is usually tests plus vibes. Congruent gives a real answer for a deliberately narrow slice of the problem: **`EQUIVALENT up to bound N`**, **`COUNTEREXAMPLE: <concrete input>`**, or an honest **`UNKNOWN`** — never a guess dressed up as a proof.
 
 It's equivalence checking (the EDA/formal-methods kind) pointed at the problem of trusting AI-generated code.
 
@@ -85,10 +85,14 @@ And it *proves* the honest rewrites correct — distributivity over modular arit
 ```console
 $ congruent original.py:f candidate.py:g          # (x+y)*2  vs  x*2 + y*2
 EQUIVALENT  (stage: symbolic, 0.00s)
-  equivalent up to bound 8
+  equivalent (complete — no bound needed)
   note: 32-bit two's-complement integers
   note: complete: agree on all 32-bit inputs (no loops to bound)
 ```
+
+Note what that verdict does *not* say: there is no loop and no list here, so the
+bound never binds — the pair is decided over the entire 32-bit input space. A
+result that genuinely is complete says so, rather than hiding behind a bound.
 
 One screenshot of *proof-or-counterexample on a real AI refactor* communicates the whole value.
 
@@ -172,7 +176,13 @@ congruent path/to/original.py:func_name path/to/candidate.py:func_name --bound 8
 | `--int-width W` | `32` | Bit width for the fixed-width integer model |
 | `--assume EXPR` | — | Precondition on the inputs, e.g. `--assume 'n >= 0'` (repeatable) |
 | `--no-minimize` | off | Report the first counterexample found, not the smallest |
-| `--cross-check` | off | Re-decide with CVC5 and flag any disagreement (needs `pip install cvc5`) |
+| `--cross-check` | off | Re-decide with CVC5 and flag any disagreement (needs `pip install "congruent-eq[cross-check]"`) |
+| `--timeout S` | `300` | Give up on the solver after `S` seconds and report `UNKNOWN` (`0` = no limit) |
+
+Some queries are genuinely intractable — multiplying unknowns by unknowns in a
+loop (a polynomial with symbolic coefficients) is the classic one. `--timeout`
+bounds them: the verdict degrades to an honest `UNKNOWN`, never a hang and never
+a false `EQUIVALENT`. See [benchmarks/README.md](benchmarks/README.md#the-scaling-edge-measured).
 
 ## Layout
 
@@ -186,11 +196,15 @@ src/congruent/
   backends.py   # CVC5 cross-check (independent second opinion)
   equiv.py      # orchestration, escalation, Verdict data model
   report.py     # verdict formatting
+  refine.py     # the LLM closed loop (AI proposes → Congruent verifies → feedback)
   cli.py        # `congruent a.py:f b.py:g --bound 8`
-tests/          # 154 tests incl. a fuzz soundness guard
-examples/       # gallery of realistic AI-refactor pairs (Python + C) + runner
-benchmarks/     # recall gate, timing-vs-bound, self-validating fuzzer
+tests/          # 229 tests incl. fuzz + oracle soundness guards
+examples/       # gallery of realistic AI-refactor pairs (Python + C), runner,
+                #   closed_loop_demo.py (offline/--live), live_rewrite.py (your code)
+benchmarks/     # recall gate, timing-vs-bound, self-validating fuzzer,
+                #   realpy_fuzz.py (semantics oracle), numpy_oracle.py (wrapping oracle)
 docs/demo.svg   # the README demo image
+docs/live_run.md # captured live-model sessions (caught, corrected, proven)
 ```
 
 ## Gallery
@@ -241,12 +255,18 @@ python benchmarks/realpy_fuzz.py      # interpreter vs. real Python (semantics o
 python benchmarks/numpy_oracle.py     # wrapping vs. numpy fixed-width ints (overflow oracle)
 ```
 
+`numpy_oracle.py` needs the `oracle` extra: `pip install "congruent-eq[oracle]"`
+(from source: `python -m pip install -e ".[dev,oracle]"`). Everything else in that
+block runs on the core install.
+
 `bench_recall.py` exits non-zero if any verdict is unsound (a false `EQUIVALENT`
 or false `COUNTEREXAMPLE`), so it doubles as a soundness gate. `fuzz.py` is the
 deepest check: it generates random function pairs, asks Congruent, and then
 *independently re-validates* each verdict against the concrete interpreter — so a
-false verdict fails loudly. ~4,900 random pairs (plus Z3↔CVC5 cross-checks) pass
-with zero unsound verdicts; a small deterministic batch runs in the test suite.
+false verdict fails loudly. It re-verifies clean on the current code (3,000 random
+pairs, 0 unsound, at its default settings), and tens of thousands more passed
+across seven adversarial audit rounds (plus Z3↔CVC5 cross-checks); a small
+deterministic batch runs in the test suite.
 
 Two more oracles validate the interpreter every other check trusts, each against
 a reference that shares no code with Congruent — one per half of the fixed-width
@@ -255,7 +275,7 @@ behavior (this caught the negative-indexing bug both stages shared); it runs wid
 so nothing overflows, isolating *semantics*. `numpy_oracle.py` covers the other
 half — the two's-complement **wrapping** itself — by re-evaluating random integer
 functions with numpy's C fixed-width scalars at small widths where overflow is
-the common case; it agrees with the interpreter across all widths (and matches
+the common case; it agrees with the interpreter across 8/16/32/64 (and matches
 Congruent's arithmetic *exhaustively* over every 8-bit operand pair, overflow
 edges included). Both run a deterministic slice in the test suite.
 

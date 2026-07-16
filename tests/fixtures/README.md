@@ -31,8 +31,8 @@ machine-int domain. For loop-free pairs, `EQUIVALENT` means equal at every
 input. For pairs with loops, the verdict is bounded: loops are checked up to
 `--bound` iterations, and inputs that would drive more are out of scope — so a
 loop pair must be equivalent for *all* inputs whose loop stays within the bound
-(a loop summed against a closed form fails this once overflow bites, and also
-needs an `n >= 0` precondition the tool can't yet express — hence it's not here).
+(a loop summed against a closed form only satisfies this under an `n >= 0`
+precondition — see `sum_to_n.py`, which declares one).
 
 ## Files
 

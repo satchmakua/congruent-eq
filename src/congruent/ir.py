@@ -5,7 +5,7 @@ rather than raw `ast` nodes, so the rules of the supported v1 subset live in
 exactly one place.
 
 Supported subset (v1):
-    - `def` with type-annotated positional parameters (int, bool, list[int])
+    - `def` with type-annotated positional parameters (int, bool, str, list[int])
     - `return <expr>`
     - assignment to a name: `x = <expr>` (and augmented `x += <expr>`)
     - `if` / `elif` / `else`
@@ -51,7 +51,7 @@ class Const:
 
 @dataclass(frozen=True)
 class BinOp:
-    op: str  # + - * // %
+    op: str  # + - * // %   (plus c/ c% — C truncating div/rem, emitted by cfront.py)
     left: Expr
     right: Expr
 
@@ -178,7 +178,7 @@ Stmt = Return | Assign | If | For | ForEach | Break | Continue
 @dataclass(frozen=True)
 class Param:
     name: str
-    type_name: str  # "int" | "bool" | "list[int]"
+    type_name: str  # "int" | "bool" | "str" | "list[int]"
 
 
 @dataclass(frozen=True)
@@ -365,8 +365,8 @@ def _lower_stmt(node: ast.stmt) -> Stmt:
         return _lower_for(node)
 
     if isinstance(node, ast.Pass):
-        # harmless no-op; lower to an empty if-false would be silly — drop it.
-        # Represent as an If with empty branches so the type stays simple.
+        # A no-op, but `Stmt` has no unit member and `_lower_block` maps 1:1,
+        # so emit an if-False with empty branches: it encodes to nothing.
         return If(Const(False, "bool"), (), ())
 
     raise UnsupportedConstruct(f"unsupported statement: {type(node).__name__}")

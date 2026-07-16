@@ -6,7 +6,8 @@ a single state-threading pass that carries `(env, returned, return_value)`. Each
 statement executes only where it is "live" (`pc ∧ ¬returned`), so an early
 `return` anywhere — including inside a loop — correctly short-circuits the rest.
 Bounded `for` loops are unrolled to `--bound` iterations. Falling off the end
-without returning is folded into the error condition (Python would return None).
+without returning is modeled *separately* from the error condition — Python
+returns None, a value, not a raise — so the two are never conflated.
 
 **Semantics must mirror `difftest`'s concrete interpreter exactly**, or the two
 stages could disagree:
@@ -510,10 +511,10 @@ def _eval_binop(node: ir.BinOp, env: _Env, ctx: _Ctx, pc: z3.BoolRef) -> z3.Expr
             return left  # placeholder, dominated by the error condition
         # Same kind: append a literal (cheap) or concat two sequences.
         if isinstance(node.right, ir.ListLit):
-            return _append(left, [_eval(e, env, ctx, pc) for e in node.right.elements], ctx, pc)
+            return _append(left, [_eval(e, env, ctx, pc) for e in node.right.elements], ctx)
         if isinstance(node.right, ir.StrLit):
-            return _append(left, [z3.BitVecVal(ord(c), ctx.w) for c in node.right.value], ctx, pc)
-        return _concat(left, right, ctx, pc)
+            return _append(left, [z3.BitVecVal(ord(c), ctx.w) for c in node.right.value], ctx)
+        return _concat(left, right, ctx)
 
     right = _eval(node.right, env, ctx, pc)
     if isinstance(right, SymList):
@@ -693,7 +694,7 @@ def _seq_eq(a: SymList, b: SymList, ctx: _Ctx) -> z3.BoolRef:
     return z3.And(a.length == b.length, same_elems)
 
 
-def _append(a: SymList, elements, ctx: _Ctx, pc) -> SymList:
+def _append(a: SymList, elements, ctx: _Ctx) -> SymList:
     """`a + [e0, e1, ...]` — store each element at the running tail (cheap)."""
     cap = _checked_cap(a.cap + len(elements), ctx)
     arr, length = a.arr, a.length
@@ -705,7 +706,7 @@ def _append(a: SymList, elements, ctx: _Ctx, pc) -> SymList:
     return SymList(arr, length, cap=cap, kind=a.kind)
 
 
-def _concat(a: SymList, b: SymList, ctx: _Ctx, pc) -> SymList:
+def _concat(a: SymList, b: SymList, ctx: _Ctx) -> SymList:
     """General sequence concatenation. Materializes exactly `a.cap + b.cap` slots —
     the sequence's own static max length — so every populated slot is correct and
     `length = a.length + b.length <= a.cap + b.cap` holds by construction, with no

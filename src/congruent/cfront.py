@@ -82,6 +82,10 @@ def _lower_function(node: c_ast.FuncDef) -> Function:
         params.append(Param(arg.name, _type_of(arg.type)))
     return_type = _type_of(decl.type)
     body = _lower_block(node.body)
+    # Same rule the Python front end enforces: `break`/`continue` are only legal
+    # inside a loop. Without this the C path silently accepted them at top level
+    # and handed the stages an IR they model inconsistently.
+    ir._check_loop_control(body, in_loop=False)
     _reject_escaping_counter(body)
     return Function(node.decl.name, params, return_type, body)
 
